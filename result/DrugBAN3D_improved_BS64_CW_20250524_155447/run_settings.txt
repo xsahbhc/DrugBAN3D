@@ -1,0 +1,6 @@
+运行时设置
+时间戳: 20250524_155447
+数据目录: /home/work/workspace/shi_shaoqun/snap/3D_structure/train_pdb
+标签文件: /home/work/workspace/shi_shaoqun/snap/3D_structure/labels.csv
+配置文件: configs/DrugBAN3D.yaml
+改进点: 批次大小=64, 类别加权损失函数, 余弦退火学习率

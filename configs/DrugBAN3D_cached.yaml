@@ -1,0 +1,124 @@
+MODEL_TYPE: "DrugBAN3D"
+
+PATH:
+  DATA_DIR: "datasets"
+  RESULT_DIR: "result/DrugBAN3D_optimized_final_best"
+  CACHE_DIR: "/home/work/workspace/shi_shaoqun/snap/DrugBAN-main/cached_graphs"  # 设置预处理缓存目录
+
+# 数据集相关配置
+DATA_3D:
+  ROOT_DIR: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_pdb"
+  LABEL_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/labels.csv"
+  DIS_THRESHOLD: 5.0
+  NUM_WORKERS: 16 # 最大化工作线程加快数据加载
+  TRAIN_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv"
+  VAL_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv"
+  TEST_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv"
+
+DATA:
+  TRAIN_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv"
+  VAL_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv"
+  TEST_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv"
+
+TRAIN:
+  D_LEARNING_RATE: 0.00018  # 使用最佳模型的学习率
+  G_LEARNING_RATE: 0.0001   # 保持生成器学习率
+  BATCH_SIZE: 32  # 保持批次大小为32
+  D_STEPS_PER_G_STEP: 1
+  RESUME_CHECKPOINT: ""
+  EPOCH: 120  # 增加轮数，配合早停策略
+  GRADIENT_ACCUMULATE_STEPS: 4  # 保持梯度累积步数
+  GRADIENT_CLIP_NORM: 1.0  # 保持梯度裁剪阈值
+  WEIGHT_DECAY: 0.0003  # 使用最佳模型的权重衰减值
+  LABEL_SMOOTHING: 0.05  # 保持适度的标签平滑
+  POS_WEIGHT: 2.3  # 使用最佳模型的正样本权重
+
+DRUG:
+  ATOM_MAX: 50
+  NODE_IN_FEATS: 35
+  NODE_IN_EMBEDDING: 128
+  PADDING: True
+  HIDDEN_LAYERS: [128, 256, 256]  # 保持三层网络结构
+
+PROTEIN:
+  SEQ_MAX: 1000
+  EMBEDDING_DIM: 64
+  PADDING: True
+  NUM_FILTERS: [32, 64, 96]
+  KERNEL_SIZE: [4, 8, 12]
+  NODE_IN_FEATS: 35
+
+EDGE_FEATS:
+  intra_l: 17
+  intra_p: 17
+  inter_l2p: 11
+  inter_p2l: 11
+
+GNN:
+  HIDDEN_DIM: 384  # 保持较大的隐藏维度
+  NUM_LAYERS: 4    # 保持4层GNN结构
+
+BCN:
+  HEADS: 8  # 保持8个注意力头
+
+DECODER:
+  IN_DIM: 384
+  HIDDEN_DIM: 512
+  OUT_DIM: 128  # 保持128维输出
+  BINARY: 1
+  DROPOUT: 0.5  # 使用最佳模型的Dropout率
+
+ADAPT:
+  LAMBDA: 0.1
+  USE_TARGET: False
+  METHOD: None
+  ENTROPY_LAMBDA: 1.0
+  RANDOM_DIM: 512
+
+COMET:
+  USE: False
+  PROJECT: "DrugBAN3D"
+  WORKSPACE: "xsahbhc"
+  TAG: "optimized_final_best"
+
+SOLVER:
+  MAX_EPOCH: 120
+  BATCH_SIZE: 32
+  USE_MIXED_PRECISION: False  # 不使用混合精度训练
+  LR_SCHEDULER: True
+  LR_SCHEDULER_TYPE: "plateau"  # 使用plateau调度器，在最佳模型中表现更好
+  LR_WARMUP_EPOCHS: 8  # 增加预热轮数，有助于更稳定的初始训练
+  GRADIENT_CLIP_NORM: 1.0
+  SEED: 2023  # 使用新的随机种子，可能有更好的初始化效果
+
+RESULT:
+  OUTPUT_DIR: "result/DrugBAN3D_optimized_final_best"
+  SAVE_MODEL: True
+  SAVE_EACH_EPOCH: False
+  SAVE_BEST_ONLY: True
+  USE_STATE_DICT: True
+
+# 早停配置
+USE_EARLY_STOPPING: True
+EARLY_STOPPING_PATIENCE: 20  # 增加早停耐心值，避免过早停止训练
+
+# 配置偏置校正
+USE_BIAS_CORRECTION: True  # 启用偏置校正
+
+# 损失函数配置
+USE_FOCAL_LOSS: True  # 启用焦点损失处理类别不平衡
+FOCAL_LOSS_GAMMA: 2.0
+FOCAL_LOSS_ALPHA: 0.25
+
+# 禁用可能导致不稳定的高级功能
+USE_CONTRASTIVE_LOSS: False  # 禁用对比损失
+USE_FEATURE_REGULARIZATION: False  # 禁用特征正则化
+
+DA:
+  USE: False
+  METHOD: None
+  INIT_EPOCH: 0
+  LAMB_DA: 0.1
+  RANDOM_LAYER: False
+  ORIGINAL_RANDOM: False
+  USE_ENTROPY: False 

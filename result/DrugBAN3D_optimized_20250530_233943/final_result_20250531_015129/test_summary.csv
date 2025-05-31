@@ -1,0 +1,2 @@
+best_epoch,auroc,auprc,f1,sensitivity,specificity,accuracy
+73,0.887514,0.819485,0.818978,0.751067,0.866071,0.788258
