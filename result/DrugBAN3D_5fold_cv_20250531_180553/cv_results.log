@@ -1,0 +1,64 @@
+=== DrugBAN3D五折交叉验证配置 ===
+- 配置文件: configs/DrugBAN3D_cached.yaml
+- 数据目录: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_pdb
+- 标签文件: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/labels.csv
+- 缓存目录: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/cached_graphs
+- 交叉验证折数: 5
+- 输出目录: result/DrugBAN3D_5fold_cv_20250531_180553
+- 预处理缓存文件数: 10398
+===============================
+开始五折交叉验证...
+开始时间: 2025年 05月 31日 星期六 18:05:53 CST
+===============================
+开始第 1 折验证
+- 输出目录: result/DrugBAN3D_5fold_cv_20250531_180553/fold_1
+- 日志文件: result/DrugBAN3D_5fold_cv_20250531_180553/fold_1/train.log
+正在运行第 1 折训练...
+第 1 折训练完成，退出代码: 0
+警告: 未找到第 1 折的测试结果文件
+第 1 折验证完成
+===============================
+开始第 2 折验证
+- 输出目录: result/DrugBAN3D_5fold_cv_20250531_180553/fold_2
+- 日志文件: result/DrugBAN3D_5fold_cv_20250531_180553/fold_2/train.log
+正在运行第 2 折训练...
+第 2 折训练完成，退出代码: 0
+警告: 未找到第 2 折的测试结果文件
+第 2 折验证完成
+===============================
+开始第 3 折验证
+- 输出目录: result/DrugBAN3D_5fold_cv_20250531_180553/fold_3
+- 日志文件: result/DrugBAN3D_5fold_cv_20250531_180553/fold_3/train.log
+正在运行第 3 折训练...
+第 3 折训练完成，退出代码: 0
+警告: 未找到第 3 折的测试结果文件
+第 3 折验证完成
+===============================
+开始第 4 折验证
+- 输出目录: result/DrugBAN3D_5fold_cv_20250531_180553/fold_4
+- 日志文件: result/DrugBAN3D_5fold_cv_20250531_180553/fold_4/train.log
+正在运行第 4 折训练...
+第 4 折训练完成，退出代码: 0
+警告: 未找到第 4 折的测试结果文件
+第 4 折验证完成
+===============================
+开始第 5 折验证
+- 输出目录: result/DrugBAN3D_5fold_cv_20250531_180553/fold_5
+- 日志文件: result/DrugBAN3D_5fold_cv_20250531_180553/fold_5/train.log
+正在运行第 5 折训练...
+第 5 折训练完成，退出代码: 0
+警告: 未找到第 5 折的测试结果文件
+第 5 折验证完成
+===============================
+五折交叉验证结果汇总:
+各折性能指标:
+第 1 折: AUROC=N/A, AUPRC=N/A, Accuracy=N/A, F1=N/A
+第 2 折: AUROC=N/A, AUPRC=N/A, Accuracy=N/A, F1=N/A
+第 3 折: AUROC=N/A, AUPRC=N/A, Accuracy=N/A, F1=N/A
+第 4 折: AUROC=N/A, AUPRC=N/A, Accuracy=N/A, F1=N/A
+第 5 折: AUROC=N/A, AUPRC=N/A, Accuracy=N/A, F1=N/A
+警告: 没有有效的结果可供计算平均值
+===============================
+五折交叉验证完成时间: 2025年 06月 01日 星期日 02:38:14 CST
+结果保存在: result/DrugBAN3D_5fold_cv_20250531_180553
+日志文件: result/DrugBAN3D_5fold_cv_20250531_180553/cv_results.log

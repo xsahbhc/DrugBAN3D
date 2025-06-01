@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # 设置使用GPU 1
-export CUDA_VISIBLE_DEVICES=0
-echo "已设置使用GPU 0 (CUDA_VISIBLE_DEVICES=0)"
+export CUDA_VISIBLE_DEVICES=1
+echo "已设置使用GPU 1 (CUDA_VISIBLE_DEVICES=1)"
 
 # 设置Comet ML API密钥
 # 请替换为您的实际密钥
