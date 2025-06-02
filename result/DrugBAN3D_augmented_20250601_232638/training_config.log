@@ -1,0 +1,10 @@
+=== DrugBAN3D单次训练配置(使用数据增强) ===
+- 配置文件: configs/DrugBAN3D_cached.yaml
+- 数据目录: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_pdb
+- 标签文件: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/labels.csv
+- 缓存目录: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/augmented_cache
+- 训练文件: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv
+- 验证文件: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv
+- 测试文件: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv
+- 输出目录: result/DrugBAN3D_augmented_20250601_232638
+===============================
