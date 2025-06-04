@@ -1,0 +1,439 @@
+# Comet ML支持 - 必须在其他导入之前
+comet_support = True
+try:
+    from comet_ml import Experiment
+except ImportError as e:
+    print("Comet ML is not installed, ignore the comet experiment monitor")
+    comet_support = False
+
+import os
+import argparse
+import torch
+import numpy as np
+import random
+import pandas as pd
+import warnings
+from time import time
+from yacs.config import CfgNode
+from configs import get_cfg_defaults
+from trainer import Trainer
+from dataloader import DTIDataset, MultiDataLoader
+from dataloader_3d import get_protein_ligand_dataloader, get_precomputed_graph_dataloader, get_loader
+from models import DrugBAN
+from drugban_3d import DrugBAN3D
+from torch.utils.data import DataLoader
+from utils import set_seed, graph_collate_func, mkdir
+from dataloader_3d import ProteinLigandDataset, filter_none_collate_fn
+from domain_adaptator import Discriminator
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="DrugBAN for DTI prediction")
+    # 配置文件
+    parser.add_argument("--cfg", dest="cfg_file", help="配置文件路径", required=True, type=str)
+    # 数据集
+    parser.add_argument("--data", dest="data", help="数据集名称: ['biosnap', 'bindingdb', 'human']",
+                        required=True, type=str)
+    # 分割方式
+    parser.add_argument("--split", dest="split", help="分割方式: ['random', 'cold', 'cluster', 'stratified']",
+                        required=True, type=str, choices=['random', 'cold', 'cluster', 'stratified'])
+    # 模型权重路径
+    parser.add_argument("--load", dest="load", help="从检查点加载", default=None, type=str)
+    # 输出目录
+    parser.add_argument("--output-dir", dest="output_dir", help="输出目录", type=str, default=None)
+    # 随机种子
+    parser.add_argument("--seed", type=int, default=42, help='random seed')
+    # 标签
+    parser.add_argument("--tag", type=str, help='experiment tag')
+    
+    # 3D数据相关参数
+    parser.add_argument("--use_3d", action="store_true", help="使用3D数据和模型")
+    parser.add_argument("--data_3d_root", type=str, help="3D数据根目录")
+    parser.add_argument("--data_3d_label", type=str, help="3D数据标签文件")
+    
+    # 交叉验证参数
+    parser.add_argument("--cv_fold", type=int, default=0, help="当前交叉验证折数(1-based)")
+    parser.add_argument("--cv_total_folds", type=int, default=0, help="交叉验证总折数")
+    
+    # 数据增强选项
+    parser.add_argument("--use_augmentation", action="store_true", help="使用数据增强")
+    parser.add_argument("--cache_dir", type=str, help="缓存目录路径", default=None)
+    parser.add_argument("--train_file", type=str, help="训练数据文件路径", default=None)
+    parser.add_argument("--val_file", type=str, help="验证数据文件路径", default=None)
+    parser.add_argument("--test_file", type=str, help="测试数据文件路径", default=None)
+    
+    return parser.parse_args()
+
+
+def read_config(args):
+    """读取配置文件并设置默认值"""
+    cfg = get_cfg_defaults()
+    cfg.merge_from_file(args.cfg_file)
+    
+    # 设置输出目录
+    if args.output_dir is not None:
+        cfg.RESULT.OUTPUT_DIR = args.output_dir
+    
+    # 设置标签 - 更安全的方式处理tag参数
+    if args.tag is not None:
+        if not hasattr(cfg.COMET, 'TAG'):
+            cfg.COMET.TAG = args.tag
+        else:
+            cfg.COMET.TAG = args.tag
+    
+    # 设置3D数据参数
+    if args.use_3d:
+        cfg.MODEL_TYPE = "DrugBAN3D"
+        if args.data_3d_root:
+            cfg.DATA_3D.ROOT_DIR = args.data_3d_root
+        if args.data_3d_label:
+            cfg.DATA_3D.LABEL_FILE = args.data_3d_label
+    
+    return cfg
+
+
+def set_random_seed(seed):
+    """设置随机种子以便复现结果"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+
+def main():
+    # 解析命令行参数
+    args = parse_args()
+    
+    # 设置随机种子
+    set_random_seed(args.seed)
+    
+    # 读取配置
+    cfg = read_config(args)
+    
+    # 创建输出目录
+    mkdir(cfg.RESULT.OUTPUT_DIR)
+    
+    # 获取设备
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # 设置日志
+    suffix = str(int(time() * 1000))[6:]
+    experiment = None
+    
+    print(f"配置文件: {args.cfg_file}")
+    print(f"参数: {dict(cfg)}")
+    print(f"运行设备: {device}")
+    
+    # 交叉验证支持
+    cv_fold = args.cv_fold
+    cv_total_folds = args.cv_total_folds
+    use_cv = cv_fold > 0 and cv_total_folds > 0
+    
+    if use_cv:
+        print(f"使用交叉验证: 当前第{cv_fold}折，共{cv_total_folds}折")
+    
+    # 准备数据
+    if cfg.MODEL_TYPE == "DrugBAN":
+        # 使用原始DrugBAN数据加载方式
+        dataFolder = f'{cfg.PATH.DATA_DIR}/{args.data}'
+        dataFolder = os.path.join(dataFolder, str(args.split))
+        
+        train_path = os.path.join(dataFolder, 'train.csv')
+        val_path = os.path.join(dataFolder, "val.csv")
+        test_path = os.path.join(dataFolder, "test.csv")
+        
+        df_train = pd.read_csv(train_path)
+        df_val = pd.read_csv(val_path)
+        df_test = pd.read_csv(test_path)
+        
+        train_samples = len(df_train)
+        val_samples = len(df_val)
+        test_samples = len(df_test)
+        
+        if args.split == 'stratified':
+            # 计算正样本比例
+            train_pos = df_train['label'].sum()
+            val_pos = df_val['label'].sum()
+            test_pos = df_test['label'].sum()
+            train_pos_ratio = train_pos / train_samples * 100
+            val_pos_ratio = val_pos / val_samples * 100
+            test_pos_ratio = test_pos / test_samples * 100
+            print(f"分层数据集: 训练集 {train_samples} 样本, 验证集 {val_samples} 样本, 测试集 {test_samples} 样本")
+            print(f"正样本比例: 训练集 {train_pos_ratio:.2f}%, 验证集 {val_pos_ratio:.2f}%, 测试集 {test_pos_ratio:.2f}%")
+
+        train_dataset = DTIDataset(df_train.index.values, df_train)
+        val_dataset = DTIDataset(df_val.index.values, df_val)
+        test_dataset = DTIDataset(df_test.index.values, df_test)
+        
+        params = {
+            'batch_size': cfg.TRAIN.BATCH_SIZE, 
+            'shuffle': True, 
+            'num_workers': 4,
+            'drop_last': True, 
+            'collate_fn': graph_collate_func
+        }
+        
+        training_generator = DataLoader(train_dataset, **params)
+        params['shuffle'] = False
+        params['drop_last'] = False
+        val_generator = DataLoader(val_dataset, **params)
+        test_generator = DataLoader(test_dataset, **params)
+    elif cfg.MODEL_TYPE == "DrugBAN3D":
+        # 为3D模型加载数据
+        data_dir = args.data_3d_root if args.data_3d_root else cfg['DATA_3D']['ROOT_DIR']
+        label_file = args.data_3d_label if args.data_3d_label else cfg['DATA_3D']['LABEL_FILE']
+        dis_threshold = cfg['DATA_3D']['DIS_THRESHOLD']
+        num_workers = cfg['DATA_3D']['NUM_WORKERS'] if 'NUM_WORKERS' in cfg['DATA_3D'] else 4
+        
+        # 获取缓存目录
+        cache_dir = args.cache_dir if args.cache_dir is not None else cfg['PATH'].get('CACHE_DIR', None)
+        
+        # 添加对数据增强的支持
+        use_augmentation = args.use_augmentation
+        
+        # 根据命令行参数设置训练、验证和测试文件
+        train_file = args.train_file if args.train_file else cfg['DATA_3D'].get('TRAIN_FILE', None)
+        val_file = args.val_file if args.val_file else cfg['DATA_3D'].get('VAL_FILE', None)
+        test_file = args.test_file if args.test_file else cfg['DATA_3D'].get('TEST_FILE', None)
+        
+        print(f"使用3D数据:")
+        print(f"- 数据目录: {data_dir}")
+        print(f"- 标签文件: {label_file}")
+        print(f"- 距离阈值: {dis_threshold}")
+        print(f"- 训练文件: {train_file}")
+        print(f"- 验证文件: {val_file}")
+        print(f"- 测试文件: {test_file}")
+        print(f"- 缓存目录: {cache_dir}")
+        print(f"- 数据增强: {'启用' if use_augmentation else '禁用'}")
+        
+        # 创建训练、验证和测试数据加载器
+        train_generator = get_loader(
+            root_dir=data_dir,
+            label_file=train_file,
+            batch_size=cfg['TRAIN']['BATCH_SIZE'],
+            shuffle=True,
+            num_workers=num_workers,
+            dis_threshold=dis_threshold,
+            cache_dir=cache_dir,
+            use_augmentation=use_augmentation
+        )
+        
+        val_generator = get_loader(
+            root_dir=data_dir,
+            label_file=val_file,
+            batch_size=cfg['TRAIN']['BATCH_SIZE'],
+            shuffle=False,
+            num_workers=num_workers,
+            dis_threshold=dis_threshold,
+            cache_dir=cache_dir,
+            use_augmentation=False  # 验证集不使用增强
+        )
+        
+        test_generator = get_loader(
+            root_dir=data_dir,
+            label_file=test_file,
+            batch_size=cfg['TRAIN']['BATCH_SIZE'],
+            shuffle=False,
+            num_workers=num_workers,
+            dis_threshold=dis_threshold,
+            cache_dir=cache_dir,
+            use_augmentation=False  # 测试集不使用增强
+                test_generator = DataLoader(
+                    dataset=test_dataset,
+                    batch_size=cfg.TRAIN.BATCH_SIZE,
+                    shuffle=False,
+                    num_workers=num_workers,
+                    collate_fn=filter_none_collate_fn
+                )
+                
+                print("成功创建训练、验证和测试数据加载器")
+            else:
+                # 首先尝试使用get_loader函数，它会自动处理训练/验证/测试集划分
+                training_generator, val_generator, test_generator = get_loader(
+                    root_dir=cfg.DATA_3D.ROOT_DIR,
+                    label_file=cfg.DATA_3D.LABEL_FILE,
+                    batch_size=cfg.TRAIN.BATCH_SIZE,
+                    shuffle=True,
+                    num_workers=num_workers,
+                    dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                    cache_dir=cfg.PATH.CACHE_DIR
+                )
+                print("成功使用get_loader函数加载数据并划分训练/验证/测试集")
+            
+        except Exception as e:
+            print(f"使用预划分数据集失败: {str(e)}，尝试备用方法")
+            
+            # 备用方法 - 直接加载标签文件
+            if cfg.DATA_3D.LABEL_FILE:
+                # 如果有标签文件，使用预计算图数据
+                training_generator = get_precomputed_graph_dataloader(
+                    cfg.DATA_3D.ROOT_DIR, 
+                    cfg.DATA_3D.LABEL_FILE,
+                    batch_size=cfg.TRAIN.BATCH_SIZE,
+                    shuffle=True,
+                    num_workers=num_workers
+                )
+            else:
+                # 直接从3D结构数据创建
+                training_generator = get_protein_ligand_dataloader(
+                    cfg.DATA_3D.ROOT_DIR,
+                    batch_size=cfg.TRAIN.BATCH_SIZE,
+                    shuffle=True,
+                    num_workers=num_workers,
+                    dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                    cache_dir=cfg.PATH.CACHE_DIR
+                )
+                
+            # 简化实现，使用相同的数据集作为验证集和测试集
+            val_generator = training_generator
+            test_generator = training_generator
+            print("使用备用方法加载数据（未划分训练/验证/测试集）")
+    
+    # 初始化Comet ML
+    if cfg.COMET.USE and comet_support:
+        # 检查API密钥
+        api_key = os.environ.get("COMET_API_KEY")
+        if not api_key:
+            print("警告: 未找到COMET_API_KEY环境变量。Comet ML可能无法正常工作。")
+            print("请设置环境变量: export COMET_API_KEY='您的密钥'")
+        
+        try:
+            experiment = Experiment(
+                api_key=api_key,  # 添加API密钥参数
+                project_name=cfg.COMET.PROJECT,
+                workspace=cfg.COMET.WORKSPACE,
+                auto_output_logging="simple",
+                log_graph=True,
+                log_code=False,
+                log_git_metadata=False,
+                log_git_patch=False,
+                auto_param_logging=False,
+                auto_metric_logging=False
+            )
+            
+            # 记录超参数
+            experiment.log_parameters(dict(cfg))
+            
+            # 添加标签
+            if cfg.COMET.TAG is not None:
+                experiment.add_tag(cfg.COMET.TAG)
+            
+            # 设置实验名称
+            experiment.set_name(f"{args.data}_{suffix}")
+            
+            print(f"Comet ML初始化成功: 项目 '{cfg.COMET.PROJECT}', 工作区 '{cfg.COMET.WORKSPACE}'")
+        except Exception as e:
+            print(f"Comet ML初始化失败: {str(e)}")
+            print("将继续训练，但不会记录到Comet平台")
+            experiment = None
+    else:
+        experiment = None
+    
+    # 创建模型
+    if cfg.MODEL_TYPE == "DrugBAN":
+        model = DrugBAN(**cfg).to(device)
+    else:  # DrugBAN3D
+        model = DrugBAN3D(**cfg).to(device)
+    
+    # 创建优化器
+    weight_decay = cfg.TRAIN.WEIGHT_DECAY if hasattr(cfg.TRAIN, 'WEIGHT_DECAY') else 0.0
+    optimizer = torch.optim.Adam(model.parameters(), 
+                                lr=cfg.TRAIN.G_LEARNING_RATE,
+                                weight_decay=weight_decay)
+    
+    # 记录优化器配置
+    print(f"优化器: Adam, 学习率: {cfg.TRAIN.G_LEARNING_RATE}, L2正则化强度: {weight_decay}")
+    
+    # 标签平滑
+    label_smoothing = cfg.TRAIN.LABEL_SMOOTHING if hasattr(cfg.TRAIN, 'LABEL_SMOOTHING') else 0.0
+    if label_smoothing > 0:
+        print(f"启用标签平滑，参数值: {label_smoothing}")
+    
+    # 类别权重
+    pos_weight = None
+    if hasattr(cfg.TRAIN, 'CLASS_WEIGHT') and cfg.TRAIN.CLASS_WEIGHT:
+        # 计算数据集中的正负样本比例
+        train_labels = np.array([sample[1] for batch in training_generator for sample in batch])
+        pos_ratio = train_labels.mean()
+        neg_ratio = 1 - pos_ratio
+        pos_weight = torch.tensor([neg_ratio / pos_ratio * cfg.TRAIN.CLASS_WEIGHT]).to(device)
+        print(f"启用类别加权，正样本权重: {pos_weight.item():.3f}")
+    elif hasattr(cfg.TRAIN, 'POS_WEIGHT') and cfg.TRAIN.POS_WEIGHT:
+        pos_weight = torch.tensor([cfg.TRAIN.POS_WEIGHT]).to(device)
+        print(f"启用类别加权，正样本权重: {pos_weight.item():.3f}")
+    else:
+        # 分析数据集计算权重
+        try:
+            if hasattr(train_df, 'label'):
+                pos_ratio = train_df['label'].mean() 
+                if pos_ratio < 0.5:
+                    pos_weight = torch.tensor([2.125]).to(device)  # 根据数据集不平衡程度设置
+                    print(f"启用类别加权，正样本权重: {pos_weight.item():.3f}")
+        except:
+            pass
+    
+    # 确保结果目录正确设置
+    if args.output_dir:
+        cfg.RESULT.OUTPUT_DIR = args.output_dir
+        
+    # 梯度裁剪
+    if hasattr(cfg.TRAIN, 'GRADIENT_CLIP_NORM') and cfg.TRAIN.GRADIENT_CLIP_NORM > 0:
+        print(f"启用梯度裁剪，阈值：{cfg.TRAIN.GRADIENT_CLIP_NORM}")
+        
+    # 模型保存方式
+    if hasattr(cfg.RESULT, 'USE_STATE_DICT') and cfg.RESULT.USE_STATE_DICT:
+        print("使用state_dict保存模型，避免完整对象复制")
+    
+    # 学习率调度器
+    if hasattr(cfg.SOLVER, 'LR_SCHEDULER') and cfg.SOLVER.LR_SCHEDULER:
+        print(f"使用{cfg.SOLVER.LR_SCHEDULER_TYPE}学习率调度器")
+    
+    # 创建训练器
+    trainer = Trainer(
+        model=model, 
+        optim=optimizer,
+        device=device, 
+        train_dataloader=training_generator,
+        val_dataloader=val_generator,
+        test_dataloader=test_generator,
+        experiment=experiment,
+        pos_weight=pos_weight,
+        **cfg
+    )
+    
+    # 加载模型权重（如果指定了）
+    if args.load is not None:
+        trainer.load_model(args.load)
+    
+    # 训练模型
+    result = trainer.train()
+    
+    # 保存模型架构信息
+    with open(os.path.join(cfg.RESULT.OUTPUT_DIR, "model_architecture.txt"), "w") as wf:
+        wf.write(str(model))
+    
+    print()
+    print(f"Directory for saving result: {cfg.RESULT.OUTPUT_DIR}")
+    
+    return result
+
+
+if __name__ == '__main__':
+    # 忽略特定警告
+    warnings.filterwarnings("ignore", message="invalid value encountered in divide")
+    
+    # 清空GPU缓存
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    # 计时并运行主函数
+    start_time = time()
+    result = main()
+    end_time = time()
+    
+    print(f"Total running time: {round(end_time - start_time, 2)}s")

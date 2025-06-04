@@ -10,134 +10,156 @@ from domain_adaptator import ReverseLayerF
 from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, OneCycleLR
 import time
+import traceback
 
 
 class Trainer(object):
-    def __init__(self, model, optim, device, train_dataloader, val_dataloader, test_dataloader, opt_da=None, discriminator=None,
-                 experiment=None, alpha=1, **config):
+    def __init__(self, model, train_dataloader, val_dataloader=None, test_dataloader=None, config=None):
+        """初始化训练器"""
         self.model = model
-        self.optim = optim
-        self.device = device
-        self.epochs = config["SOLVER"]["MAX_EPOCH"]
-        self.current_epoch = 0
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
         self.test_dataloader = test_dataloader
-        self.is_da = config["DA"]["USE"]
-        self.alpha = alpha
-        self.n_class = config["DECODER"]["BINARY"]
+        self.config = config
         
-        # 标签平滑参数
-        self.label_smoothing = config["TRAIN"].get("LABEL_SMOOTHING", 0.0)
-        if self.label_smoothing > 0:
-            print(f"启用标签平滑，参数值: {self.label_smoothing}")
+        # 设置设备
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"运行设备: {self.device}")
         
-        # 添加类别加权参数（正样本权重）
-        # 从配置中读取POS_WEIGHT，如果未定义则使用默认值2.125
-        pos_weight_value = config["TRAIN"].get("POS_WEIGHT", 2.125)
-        self.pos_weight = torch.tensor([pos_weight_value]).to(self.device)
-        print(f"启用类别加权，正样本权重: {self.pos_weight.item()}")
+        # 将模型移至设备
+        self.model = self.model.to(self.device)
         
-        # 添加早停参数
-        self.patience = config.get("EARLY_STOPPING_PATIENCE", 5)  # 默认5轮不提升则早停
-        self.early_stopping_counter = 0  # 计数器，记录连续未改善的轮数
-        self.early_stopping = config.get("USE_EARLY_STOPPING", True)  # 默认启用早停
+        # 设置域适应标志
+        self.is_da = False
+        if config and hasattr(config, 'DA') and hasattr(config.DA, 'USE'):
+            self.is_da = config.DA.USE
         
-        if opt_da:
-            self.optim_da = opt_da
-        if self.is_da:
-            self.da_method = config["DA"]["METHOD"]
-            self.domain_dmm = discriminator
-            if config["DA"]["RANDOM_LAYER"] and not config["DA"]["ORIGINAL_RANDOM"]:
-                self.random_layer = nn.Linear(in_features=config["DECODER"]["IN_DIM"]*self.n_class, out_features=config["DA"]
-                ["RANDOM_DIM"], bias=False).to(self.device)
-                torch.nn.init.normal_(self.random_layer.weight, mean=0, std=1)
-                for param in self.random_layer.parameters():
-                    param.requires_grad = False
-            elif config["DA"]["RANDOM_LAYER"] and config["DA"]["ORIGINAL_RANDOM"]:
-                self.random_layer = RandomLayer([config["DECODER"]["IN_DIM"], self.n_class], config["DA"]["RANDOM_DIM"])
-                self.random_layer = self.random_layer.to(self.device)
-                if torch.cuda.is_available():
-                    self.random_layer.cuda()
-            else:
-                self.random_layer = False
-        self.da_init_epoch = config["DA"]["INIT_EPOCH"]
-        self.init_lamb_da = config["DA"]["LAMB_DA"]
-        self.batch_size = config["SOLVER"]["BATCH_SIZE"]
-        self.use_da_entropy = config["DA"]["USE_ENTROPY"]
-        self.nb_training = len(self.train_dataloader)
-        self.step = 0
-        self.experiment = experiment
-
-        self.best_model_state = None  # 使用state_dict而不是完整模型
-        self.best_epoch = None
-        self.best_auroc = 0
-
-        # 梯度裁剪设置
-        self.clip_grad_norm = config["TRAIN"].get("GRADIENT_CLIP_NORM", 0.0)
-        if self.clip_grad_norm > 0:
-            print(f"启用梯度裁剪，阈值：{self.clip_grad_norm}")
+        # 设置超参数
+        if config:
+            self.max_epoch = config.SOLVER.MAX_EPOCH
+            self.batch_size = config.SOLVER.BATCH_SIZE if hasattr(config.SOLVER, 'BATCH_SIZE') else 32
+            self.n_class = config.DECODER.BINARY if hasattr(config, 'DECODER') and hasattr(config.DECODER, 'BINARY') else 1
             
-        # 使用state_dict保存模型
-        self.use_state_dict = config["RESULT"].get("USE_STATE_DICT", True)
-        if self.use_state_dict:
-            print("使用state_dict保存模型，避免完整对象复制")
+            # 学习率和权重衰减
+            self.learning_rate = config.TRAIN.G_LEARNING_RATE if hasattr(config.TRAIN, 'G_LEARNING_RATE') else 0.001
+            self.weight_decay = config.TRAIN.WEIGHT_DECAY if hasattr(config.TRAIN, 'WEIGHT_DECAY') else 0.0001
+            
+            # 标签平滑和类别权重
+            self.label_smoothing = config.TRAIN.LABEL_SMOOTHING if hasattr(config.TRAIN, 'LABEL_SMOOTHING') else 0.0
+            self.pos_weight = torch.tensor(config.TRAIN.POS_WEIGHT).to(self.device) if hasattr(config.TRAIN, 'POS_WEIGHT') else None
+            
+            # 梯度裁剪
+            self.clip_grad_norm = config.TRAIN.GRADIENT_CLIP_NORM if hasattr(config.TRAIN, 'GRADIENT_CLIP_NORM') else 0.0
+            
+            # 学习率调度器
+            self.use_lr_scheduler = config.SOLVER.LR_SCHEDULER if hasattr(config.SOLVER, 'LR_SCHEDULER') else False
+            self.lr_scheduler_type = config.SOLVER.LR_SCHEDULER_TYPE if hasattr(config.SOLVER, 'LR_SCHEDULER_TYPE') else 'plateau'
+            
+            # 早停
+            self.use_early_stopping = config.USE_EARLY_STOPPING if hasattr(config, 'USE_EARLY_STOPPING') else False
+            self.early_stopping_patience = config.EARLY_STOPPING_PATIENCE if hasattr(config, 'EARLY_STOPPING_PATIENCE') else 10
+        else:
+            # 默认值
+            self.max_epoch = 100
+            self.batch_size = 32
+            self.n_class = 1
+            self.learning_rate = 0.001
+            self.weight_decay = 0.0001
+            self.label_smoothing = 0.0
+            self.pos_weight = None
+            self.clip_grad_norm = 0.0
+            self.use_lr_scheduler = False
+            self.lr_scheduler_type = 'plateau'
+            self.use_early_stopping = False
+            self.early_stopping_patience = 10
+        
+        # 创建优化器
+        self.optim = torch.optim.Adam(
+            self.model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+        
+        # 创建域适应优化器（如果需要）
+        self.optim_da = None
+        if self.is_da and hasattr(self.model, 'domain_dmm'):
+            self.optim_da = torch.optim.Adam(
+                self.model.domain_dmm.parameters(),
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay
+            )
+        
+        # 当前轮次和步数
+        self.current_epoch = 0
+        self.step = 0
+        
+        # 记录最佳验证结果
+        self.best_val_auroc = 0.0
+        self.best_val_auprc = 0.0
+        self.best_model_state = None
+        
+        # 早停计数器
+        self.early_stopping_counter = 0
 
+        # 配置损失函数
+        self.configure_loss_fn()
+        
+        # 配置学习率调度器
+        if self.use_lr_scheduler:
+            self.configure_lr_scheduler()
+        else:
+            self.scheduler = None
+
+        # 初始化属性
         self.train_loss_epoch = []
         self.train_model_loss_epoch = []
         self.train_da_loss_epoch = []
         self.val_loss_epoch, self.val_auroc_epoch = [], []
         self.test_metrics = {}
-        self.config = config
         self.output_dir = config["RESULT"]["OUTPUT_DIR"]
+        
+        # 设置实验记录
+        self.experiment = None
+        
+        # 域适应相关参数初始化
+        if self.is_da:
+            self.da_init_epoch = config["DA"]["INIT_EPOCH"]
+            self.init_lamb_da = config["DA"]["LAMB_DA"]
+            self.da_method = config["DA"]["METHOD"]
+            self.use_da_entropy = config["DA"]["USE_ENTROPY"]
+            self.epochs = self.max_epoch
+            
+            # 初始化域适应组件
+            self.domain_dmm = Discriminator(config["ADAPT"]["RANDOM_DIM"] if config["DA"]["RANDOM_LAYER"] else 
+                                          config.DECODER.OUT_DIM * self.n_class).to(self.device)
+            
+            # 初始化随机层
+            self.random_layer = None
+            if config["DA"]["RANDOM_LAYER"]:
+                self.random_layer = RandomLayer([config.DECODER.OUT_DIM, self.n_class], 
+                                               config["ADAPT"]["RANDOM_DIM"]).to(self.device)
+                
+            # 域适应alpha参数
+            self.alpha = 0.0  # 初始化为0，后续会根据轮次调整
+        else:
+            # 域适应默认参数
+            self.da_init_epoch = 0
+            self.init_lamb_da = 0.1
+            self.da_method = None
+            self.use_da_entropy = False
+            self.domain_dmm = None
+            self.random_layer = None
+            self.alpha = 0.0
         
         # 是否每轮保存结果
         self.save_each_epoch = config["RESULT"].get("SAVE_EACH_EPOCH", False)
         self.save_best_only = config["RESULT"].get("SAVE_BEST_ONLY", False)
             
-        # 设置学习率调度器
-        self.use_lr_scheduler = config["SOLVER"].get("LR_SCHEDULER", False)
-        if self.use_lr_scheduler:
-            lr_scheduler_type = config["SOLVER"].get("LR_SCHEDULER_TYPE", "cosine")
-            warmup_epochs = config["SOLVER"].get("LR_WARMUP_EPOCHS", 0)
-            
-            if lr_scheduler_type == "cosine":
-                self.scheduler = CosineAnnealingLR(self.optim, T_max=self.epochs)
-                print(f"使用余弦退火学习率调度器，T_max={self.epochs}")
-            elif lr_scheduler_type == "plateau":
-                # 增强ReduceLROnPlateau的参数设置
-                self.scheduler = ReduceLROnPlateau(
-                    self.optim, 
-                    mode='max',          # 监控指标增大时(AUROC)表示改进
-                    factor=0.5,          # 学习率降低为之前的一半
-                    patience=5,          # 5轮不改善才降低学习率
-                    verbose=True,        # 打印学习率变化
-                    threshold=0.0005,    # 指标改善阈值
-                    min_lr=1e-6          # 最小学习率限制
-                )
-                print("使用ReduceLROnPlateau学习率调度器，监控验证集AUROC")
-            elif lr_scheduler_type == "one_cycle":
-                steps_per_epoch = len(self.train_dataloader)
-                self.scheduler = OneCycleLR(
-                    self.optim, 
-                    max_lr=config["TRAIN"]["G_LEARNING_RATE"] * 10, 
-                    epochs=self.epochs,
-                    steps_per_epoch=steps_per_epoch
-                )
-                print("使用OneCycleLR学习率调度器")
-
-        valid_metric_header = ["# Epoch", "AUROC", "AUPRC", "Val_loss"]
-        test_metric_header = ["# Best Epoch", "AUROC", "AUPRC", "F1", "Sensitivity", "Specificity", "Accuracy",
-                              "Threshold", "Test_loss"]
-        if not self.is_da:
-            train_metric_header = ["# Epoch", "Train_loss"]
+        # 确保DA配置存在
+        if hasattr(config, "DA") and hasattr(config["DA"], "ORIGINAL_RANDOM"):
+            self.original_random = config["DA"]["ORIGINAL_RANDOM"]
         else:
-            train_metric_header = ["# Epoch", "Train_loss", "Model_loss", "epoch_lamb_da", "da_loss"]
-        self.val_table = PrettyTable(valid_metric_header)
-        self.test_table = PrettyTable(test_metric_header)
-        self.train_table = PrettyTable(train_metric_header)
-
-        self.original_random = config["DA"]["ORIGINAL_RANDOM"]
+            self.original_random = False
 
     def load_model(self, checkpoint_path):
         """加载模型权重"""
@@ -172,11 +194,11 @@ class Trainer(object):
         with open(log_file, 'w') as f:
             f.write(f"训练开始时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"模型: {self.config['MODEL_TYPE']}\n")
-            f.write(f"总训练轮数: {self.epochs}\n\n")
+            f.write(f"总训练轮数: {self.max_epoch}\n\n")
             f.write("轮次\t训练损失\t验证损失\t验证AUROC\t验证AUPRC\n")
             f.write("-" * 70 + "\n")
         
-        for i in range(self.epochs):
+        for i in range(self.max_epoch):
             self.current_epoch += 1
             if not self.is_da:
                 train_loss = self.train_epoch()
@@ -194,15 +216,19 @@ class Trainer(object):
                     self.experiment.log_metric("train_epoch model loss", model_loss, epoch=self.current_epoch)
                     if self.current_epoch >= self.da_init_epoch:
                         self.experiment.log_metric("train_epoch da loss", da_loss, epoch=self.current_epoch)
-            self.train_table.add_row(train_lst)
+            
+            # 简化：移除表格添加
+            # self.train_table.add_row(train_lst)
             self.train_loss_epoch.append(train_loss)
             auroc, auprc, val_loss = self.test(dataloader="val")
             if self.experiment:
                 self.experiment.log_metric("valid_epoch model loss", val_loss, epoch=self.current_epoch)
                 self.experiment.log_metric("valid_epoch auroc", auroc, epoch=self.current_epoch)
                 self.experiment.log_metric("valid_epoch auprc", auprc, epoch=self.current_epoch)
-            val_lst = ["epoch " + str(self.current_epoch)] + list(map(float2str, [auroc, auprc, val_loss]))
-            self.val_table.add_row(val_lst)
+            
+            # 简化：移除表格添加
+            # val_lst = ["epoch " + str(self.current_epoch)] + list(map(float2str, [auroc, auprc, val_loss]))
+            # self.val_table.add_row(val_lst)
             self.val_loss_epoch.append(val_loss)
             self.val_auroc_epoch.append(auroc)
             
@@ -219,13 +245,16 @@ class Trainer(object):
                     self.scheduler.step()
                 
             # 检查是否是新的最佳模型
-            if auroc >= self.best_auroc:
+            if auroc >= self.best_val_auroc:
                 # 保存模型state_dict而不是整个模型对象
                 self.best_model_state = copy.deepcopy(self.model.state_dict())
-                self.best_auroc = auroc
+                self.best_val_auroc = auroc
+                self.best_val_auprc = auprc
                 self.best_epoch = self.current_epoch
                 # 保存最佳模型
                 if self.save_best_only:
+                    # 确保输出目录存在
+                    os.makedirs(self.output_dir, exist_ok=True)
                     torch.save(self.best_model_state,
                            os.path.join(self.output_dir, f"best_model.pth"))
                 # 重置早停计数器
@@ -233,48 +262,16 @@ class Trainer(object):
             else:
                 # 增加早停计数器
                 self.early_stopping_counter += 1
-                if self.early_stopping and self.early_stopping_counter >= self.patience:
-                    print(f"早停触发！连续{self.patience}轮验证集性能未提升")
+                if self.use_early_stopping and self.early_stopping_counter >= self.early_stopping_patience:
+                    print(f"早停触发！连续{self.early_stopping_patience}轮验证集性能未提升")
                     break
                 
             # 只输出简洁的训练状态信息
-            print(f'Epoch {self.current_epoch}/{self.epochs} - 训练损失: {train_loss:.4f} - 验证AUROC: {auroc:.4f} - 验证AUPRC: {auprc:.4f}')
+            print(f'Epoch {self.current_epoch}/{self.max_epoch} - 训练损失: {train_loss:.4f} - 验证AUROC: {auroc:.4f} - 验证AUPRC: {auprc:.4f}')
             
             # 更新并记录训练日志
             with open(os.path.join(self.output_dir, "training_log.txt"), 'a') as f:
                 f.write(f"{self.current_epoch}\t{train_loss:.4f}\t{val_loss:.4f}\t{auroc:.4f}\t{auprc:.4f}\n")
-                
-            # 保存进度CSV文件，方便实时查看训练进度
-            progress_csv = os.path.join(self.output_dir, "training_progress.csv")
-            with open(progress_csv, 'w') as fp:
-                # 写入表头
-                header = "epoch,train_loss,val_loss,val_auroc,val_auprc"
-                if self.is_da:
-                    header += ",model_loss,da_loss"
-                fp.write(header + "\n")
-                
-                # 写入已完成轮次的指标
-                for j in range(len(self.train_loss_epoch)):
-                    epoch_num = j + 1
-                    line = f"{epoch_num},{self.train_loss_epoch[j]:.6f},{self.val_loss_epoch[j]:.6f}"
-                    if j < len(self.val_auroc_epoch):
-                        line += f",{self.val_auroc_epoch[j]:.6f}"
-                        # 从验证表格中提取AUPRC值
-                        try:
-                            if j < len(self.val_table._rows):
-                                auprc = float(self.val_table._rows[j][2])  # AUPRC是表格的第三列
-                                line += f",{auprc:.6f}"
-                            else:
-                                line += ",NA" 
-                        except:
-                            line += ",NA"
-                    else:
-                        line += ",NA,NA"
-                        
-                    if self.is_da and j < len(self.train_model_loss_epoch) and j < len(self.train_da_loss_epoch):
-                        line += f",{self.train_model_loss_epoch[j]:.6f},{self.train_da_loss_epoch[j]:.6f}"
-                    
-                    fp.write(line + "\n")
             
             # 检查是否需要保存当前轮次的结果
             if self.save_each_epoch:
@@ -283,9 +280,11 @@ class Trainer(object):
         # 测试评估时使用最佳模型的权重
         self.model.load_state_dict(self.best_model_state)
         auroc, auprc, f1, sensitivity, specificity, accuracy, test_loss, thred_optim, precision = self.test(dataloader="test")
-        test_lst = ["epoch " + str(self.best_epoch)] + list(map(float2str, [auroc, auprc, f1, sensitivity, specificity,
-                                                                            accuracy, thred_optim, test_loss]))
-        self.test_table.add_row(test_lst)
+        
+        # 简化：移除表格添加
+        # test_lst = ["epoch " + str(self.best_epoch)] + list(map(float2str, [auroc, auprc, f1, sensitivity, specificity,
+        #                                                                     accuracy, thred_optim, test_loss]))
+        # self.test_table.add_row(test_lst)
         print('测试结果 (最佳模型来自Epoch ' + str(self.best_epoch) + '):')
         print(f'AUROC: {auroc:.4f} - AUPRC: {auprc:.4f} - F1: {f1:.4f} - 敏感度: {sensitivity:.4f} - 特异度: {specificity:.4f} - 准确率: {accuracy:.4f}')
         
@@ -301,7 +300,7 @@ class Trainer(object):
         self.test_metrics["Precision"] = precision
         self.save_result()
         if self.experiment:
-            self.experiment.log_metric("valid_best_auroc", self.best_auroc)
+            self.experiment.log_metric("valid_best_auroc", self.best_val_auroc)
             self.experiment.log_metric("valid_best_epoch", self.best_epoch)
             self.experiment.log_metric("test_auroc", self.test_metrics["auroc"])
             self.experiment.log_metric("test_auprc", self.test_metrics["auprc"])
@@ -315,6 +314,9 @@ class Trainer(object):
 
     def save_epoch_result(self):
         """每个epoch结束后保存验证结果和最佳模型（不保存每轮模型）"""
+        # 确保输出目录存在
+        os.makedirs(self.output_dir, exist_ok=True)
+        
         # 创建本轮结果目录
         epoch_dir = os.path.join(self.output_dir, f"epoch_{self.current_epoch}")
         os.makedirs(epoch_dir, exist_ok=True)
@@ -334,8 +336,9 @@ class Trainer(object):
             json.dump(metrics, f, indent=2)
         
         # 只在验证性能提升时保存模型
-        if self.val_auroc_epoch[-1] > self.best_auroc:
-            self.best_auroc = self.val_auroc_epoch[-1]
+        if self.val_auroc_epoch[-1] > self.best_val_auroc:
+            self.best_val_auroc = self.val_auroc_epoch[-1]
+            self.best_val_auprc = self.val_auprc_epoch[-1]  # 修复此处的变量错误
             self.best_epoch = self.current_epoch
             self.best_model_state = copy.deepcopy(self.model.state_dict())
             
@@ -347,14 +350,16 @@ class Trainer(object):
             # 保存最佳模型
             if self.config["RESULT"]["SAVE_MODEL"]:
                 best_model_path = os.path.join(self.output_dir, "best_model.pth")
-                if self.use_state_dict:
+                
+                if hasattr(self, 'use_state_dict') and self.use_state_dict:
                     torch.save({
                         'state_dict': self.best_model_state,
                         'epoch': self.best_epoch,
-                        'auroc': self.best_auroc
+                        'auroc': self.best_val_auroc,
+                        'auprc': self.best_val_auprc
                     }, best_model_path)
                 else:
-                    torch.save(self.model, best_model_path)
+                    torch.save(self.best_model_state, best_model_path)
                 
                 print(f"保存最佳模型（轮次 {self.best_epoch}）到 {best_model_path}")
                 
@@ -365,6 +370,9 @@ class Trainer(object):
             self.early_stopping_counter += 1
 
     def save_result(self):
+        # 确保输出目录存在
+        os.makedirs(self.output_dir, exist_ok=True)
+        
         # 使用时间戳创建唯一的结果目录
         import time
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -372,8 +380,15 @@ class Trainer(object):
         os.makedirs(result_dir, exist_ok=True)
         
         if self.config["RESULT"]["SAVE_MODEL"]:
-            torch.save(self.best_model_state, os.path.join(result_dir, f"best_model_epoch_{self.best_epoch}.pth"))
-            torch.save(self.model.state_dict(), os.path.join(result_dir, f"final_model_epoch_{self.current_epoch}.pth"))
+            # 保存最佳模型
+            best_model_path = os.path.join(result_dir, f"best_model_epoch_{self.best_epoch}.pth")
+            torch.save(self.best_model_state, best_model_path)
+            
+            # 保存最终模型
+            final_model_path = os.path.join(result_dir, f"final_model_epoch_{self.current_epoch}.pth") 
+            torch.save(self.model.state_dict(), final_model_path)
+            
+        # 保存训练指标
         state = {
             "train_epoch_loss": self.train_loss_epoch,
             "val_epoch_loss": self.val_loss_epoch,
@@ -384,54 +399,12 @@ class Trainer(object):
             state["train_model_loss"] = self.train_model_loss_epoch
             state["train_da_loss"] = self.train_da_loss_epoch
             state["da_init_epoch"] = self.da_init_epoch
-        torch.save(state, os.path.join(result_dir, f"result_metrics.pt"))
-
-        val_prettytable_file = os.path.join(result_dir, "valid_markdowntable.txt")
-        test_prettytable_file = os.path.join(result_dir, "test_markdowntable.txt")
-        train_prettytable_file = os.path.join(result_dir, "train_markdowntable.txt")
-        with open(val_prettytable_file, 'w') as fp:
-            fp.write(self.val_table.get_string())
-        with open(test_prettytable_file, 'w') as fp:
-            fp.write(self.test_table.get_string())
-        with open(train_prettytable_file, "w") as fp:
-            fp.write(self.train_table.get_string())
-            
-        # 保存CSV格式的训练日志，方便绘图和分析
-        metrics_log_file = os.path.join(result_dir, "training_metrics.csv")
-        with open(metrics_log_file, 'w') as fp:
-            # 写入表头
-            header = "epoch,train_loss,val_loss,val_auroc,val_auprc"
-            if self.is_da:
-                header += ",model_loss,da_loss"
-            fp.write(header + "\n")
-            
-            # 写入每轮指标
-            for i in range(len(self.train_loss_epoch)):
-                epoch_num = i + 1
-                line = f"{epoch_num},{self.train_loss_epoch[i]:.6f},{self.val_loss_epoch[i]:.6f}"
-                if i < len(self.val_auroc_epoch):
-                    line += f",{self.val_auroc_epoch[i]:.6f}"
-                    # 没有直接存储val_auprc，尝试从表格中提取
-                    try:
-                        # 从验证表格中提取对应行的AUPRC值
-                        if i < len(self.val_table._rows):
-                            auprc = float(self.val_table._rows[i][2])  # AUPRC是表格的第三列
-                            line += f",{auprc:.6f}"
-                        else:
-                            line += ",NA"
-                    except:
-                        line += ",NA"
-                else:
-                    line += ",NA,NA"
-                    
-                if self.is_da and i < len(self.train_model_loss_epoch) and i < len(self.train_da_loss_epoch):
-                    line += f",{self.train_model_loss_epoch[i]:.6f},{self.train_da_loss_epoch[i]:.6f}"
-                
-                fp.write(line + "\n")
-                
-        print(f"训练指标日志已保存到 {metrics_log_file}")
         
-        # 保存最终测试结果的单行CSV，方便比较不同实验
+        # 保存训练指标到文件
+        metrics_path = os.path.join(result_dir, f"result_metrics.pt")
+        torch.save(state, metrics_path)
+
+        # 保存简单的测试结果摘要
         test_summary_file = os.path.join(result_dir, "test_summary.csv") 
         with open(test_summary_file, 'w') as fp:
             # 写入表头
@@ -444,7 +417,7 @@ class Trainer(object):
             line += f",{self.test_metrics['specificity']:.6f},{self.test_metrics['accuracy']:.6f}"
             fp.write(line + "\n")
             
-        print(f"测试指标摘要已保存到 {test_summary_file}")
+        print(f"测试结果已保存到: {test_summary_file}")
         print(f"所有结果已保存到目录: {result_dir}")
 
     def _compute_entropy_weights(self, logits):
@@ -454,78 +427,93 @@ class Trainer(object):
         return entropy_w
 
     def train_epoch(self):
+        """训练一个epoch"""
         self.model.train()
-        loss_epoch = 0
-        num_batches = 0
+        losses = []
+        steps = len(self.train_dataloader)
         
-        # 使用tqdm创建进度条，但不显示加载信息
-        for i, batch in enumerate(tqdm(self.train_dataloader, desc=f"Epoch {self.current_epoch}/{self.epochs}", ncols=100)):
-            self.step += 1
-            
-            # 检查批处理数据是否为None
-            if batch is None or (isinstance(batch, tuple) and None in batch):
+        # 设置简单的进度条，只显示进度百分比
+        pbar = tqdm(self.train_dataloader, desc=f"Epoch {self.current_epoch}/{self.max_epoch}", ncols=100)
+        
+        # 增加标签统计
+        pos_count = 0
+        neg_count = 0
+        # 记录没有标签的样本数
+        none_labels = 0
+        
+        for i, batch in enumerate(pbar):
+            # 检查batch是否为None（数据加载错误）
+            if batch is None:
+                print("警告: 遇到空批次，跳过")
                 continue
                 
-            # 处理不同类型的批处理数据
             try:
-                if len(batch) == 3:  # 原始DrugBAN的数据格式: (v_d, v_p, labels)
-                    v_d, v_p, labels = batch
-                    v_d, v_p, labels = v_d.to(self.device), v_p.to(self.device), labels.float().to(self.device)
-                    v_d, v_p, f, score = self.model(v_d, v_p)
-                elif len(batch) == 2:  # DrugBAN3D的数据格式: (bg, labels)
-                    bg, labels = batch
-                    if bg is None or labels is None:
-                        continue
-                    bg, labels = bg.to(self.device), labels.float().to(self.device)
-                    v_d, v_p, f, score = self.model(bg)
-                else:
+                # 解包批次数据
+                bg, labels = batch
+                
+                # 检查是否有空标签
+                if labels is None:
+                    none_labels += 1
                     continue
                 
-                # 使用类别加权的损失函数
-                if self.n_class == 1:
-                    # 使用binary_cross_entropy函数(支持焦点损失和标签平滑)
-                    n, loss = binary_cross_entropy(
-                        score,
-                        labels,
-                        label_smoothing=self.label_smoothing
-                    )
+                # 每100个批次打印一次标签统计信息
+                if i % 100 == 0:
+                    batch_pos = (labels > 0).sum().item()
+                    batch_neg = (labels <= 0).sum().item()
+                    pos_count += batch_pos
+                    neg_count += batch_neg
+                    print(f"批次 {i}: 正样本 {batch_pos}, 负样本 {batch_neg}")
                     
-                    # 应用类别权重
-                    # 获取正样本和负样本的索引
-                    pos_indices = (labels > 0.5).float()
-                    neg_indices = (labels <= 0.5).float()
-                    
-                    # 计算每个样本的加权损失
-                    weighted_loss = loss * (pos_indices * self.pos_weight.item() + neg_indices)
-                    loss = weighted_loss.mean()
-                else:
-                    n, loss = cross_entropy_logits(score, labels)
+                # 将图和标签移到设备上
+                bg = bg.to(self.device)
+                labels = labels.float().to(self.device)
                 
-                # 反向传播和优化
+                # 确保标签形状正确
+                if len(labels.shape) == 0:
+                    labels = labels.unsqueeze(0)
+                
+                # 清除梯度
                 self.optim.zero_grad()
+                
+                # 前向传播
+                v_d, v_p, f, score = self.model(bg)
+                
+                # 计算损失
+                # 调整预测值形状，确保与标签形状匹配
+                score = score.squeeze()  # 将形状从[batch_size, 1]变为[batch_size]
+                loss = self.loss_fn(score, labels)
+                
+                # 反向传播
                 loss.backward()
                 
-                # 梯度裁剪
+                # 梯度裁剪（如果启用）
                 if self.clip_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                     
+                # 优化器步进
                 self.optim.step()
                 
-                loss_epoch += loss.item()
-                num_batches += 1
+                # 记录损失
+                losses.append(loss.item())
                 
-                if self.experiment:
-                    self.experiment.log_metric("train_step model loss", loss.item(), step=self.step)
             except Exception as e:
-                print(f"训练批次错误，跳过: {str(e)}")
-                continue
-                
-        # 防止没有成功处理任何批次的情况
-        if num_batches == 0:
-            return 0
-            
-        loss_epoch = loss_epoch / num_batches
-        return loss_epoch
+                print(f"训练批次处理出错: {str(e)}")
+                traceback.print_exc()
+        
+        # 打印标签统计信息
+        if pos_count + neg_count > 0:
+            pos_ratio = pos_count / (pos_count + neg_count) * 100
+            print(f"本轮训练: 正样本 {pos_count} ({pos_ratio:.2f}%), 负样本 {neg_count} ({100-pos_ratio:.2f}%)")
+        
+        if none_labels > 0:
+            print(f"警告: 训练中有 {none_labels} 个批次的标签为空")
+        
+        # 返回平均损失
+        if losses:
+            return sum(losses) / len(losses)
+        else:
+            print("警告: 本轮训练中没有计算任何损失")
+            return float('inf')
 
     def train_da_epoch(self):
         self.model.train()
@@ -539,7 +527,11 @@ class Trainer(object):
             if self.experiment:
                 self.experiment.log_metric("DA loss lambda", epoch_lamb_da, epoch=self.current_epoch)
         num_batches = len(self.train_dataloader)
-        for i, (batch_s, batch_t) in enumerate(tqdm(self.train_dataloader)):
+        
+        # 添加进度条
+        pbar = tqdm(self.train_dataloader, desc=f"Epoch {self.current_epoch}/{self.max_epoch}", ncols=100)
+        
+        for i, (batch_s, batch_t) in enumerate(pbar):
             self.step += 1
             v_d, v_p, labels = batch_s[0].to(self.device), batch_s[1].to(self.device), batch_s[2].float().to(
                 self.device)
@@ -618,6 +610,7 @@ class Trainer(object):
                 da_loss_epoch += da_loss.item()
                 if self.experiment:
                     self.experiment.log_metric("train_step da loss", da_loss.item(), step=self.step)
+                    
         total_loss_epoch = total_loss_epoch / num_batches
         model_loss_epoch = model_loss_epoch / num_batches
         da_loss_epoch = da_loss_epoch / num_batches
@@ -663,6 +656,9 @@ class Trainer(object):
                         
                         bg, labels = bg.to(self.device), labels.float().to(self.device)
                         v_d, v_p, f, score = self.model(bg)
+                        
+                        # 调整预测值形状，确保与标签形状匹配
+                        score = score.squeeze()
                     else:
                         continue
                     
@@ -716,3 +712,42 @@ class Trainer(object):
             return auroc, auprc, np.max(f1[5:]), sensitivity, specificity, accuracy, test_loss, thred_optim, precision1
         else:
             return auroc, auprc, test_loss
+
+    def configure_loss_fn(self):
+        """配置损失函数"""
+        if self.n_class == 1:
+            self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+            if self.label_smoothing > 0:
+                print(f"启用标签平滑，参数值: {self.label_smoothing}")
+            if self.pos_weight is not None:
+                print(f"启用类别加权，正样本权重: {self.pos_weight.item()}")
+        else:
+            self.loss_fn = nn.CrossEntropyLoss(label_smoothing=self.label_smoothing)
+            print(f"使用多分类交叉熵损失函数，类别数: {self.n_class}")
+
+    def configure_lr_scheduler(self):
+        """配置学习率调度器"""
+        if self.lr_scheduler_type == "cosine":
+            self.scheduler = CosineAnnealingLR(self.optim, T_max=self.max_epoch)
+            print(f"使用余弦退火学习率调度器，T_max={self.max_epoch}")
+        elif self.lr_scheduler_type == "plateau":
+            # 增强ReduceLROnPlateau的参数设置
+            self.scheduler = ReduceLROnPlateau(
+                self.optim, 
+                mode='max',          # 监控指标增大时(AUROC)表示改进
+                factor=0.5,          # 学习率降低为之前的一半
+                patience=5,          # 5轮不改善才降低学习率
+                verbose=True,        # 打印学习率变化
+                threshold=0.0005,    # 指标改善阈值
+                min_lr=1e-6          # 最小学习率限制
+            )
+            print("使用ReduceLROnPlateau学习率调度器，监控验证集AUROC")
+        elif self.lr_scheduler_type == "one_cycle":
+            steps_per_epoch = len(self.train_dataloader)
+            self.scheduler = OneCycleLR(
+                self.optim, 
+                max_lr=self.learning_rate * 10, 
+                epochs=self.max_epoch,
+                steps_per_epoch=steps_per_epoch
+            )
+            print("使用OneCycleLR学习率调度器")

@@ -18,8 +18,26 @@ def binary_cross_entropy(pred_output, labels, label_smoothing=0.0):
         
     loss_fct = torch.nn.BCELoss()
     m = nn.Sigmoid()
-    n = torch.squeeze(m(pred_output), 1)
+    # 获取预测输出的形状
+    pred_shape = pred_output.shape
+    
+    # 将预测输出转换为sigmoid激活的概率值
+    n = m(pred_output)
+    
+    # 确保n和target的形状匹配 - 如果预测是[batch_size, 1]，而标签是[batch_size]，则对标签进行扩展
+    if len(pred_shape) > 1 and pred_shape[1] == 1 and len(target.shape) == 1:
+        target = target.unsqueeze(1)
+    # 如果预测是[batch_size, 1]，而我们需要扁平化的输出，则挤压预测
+    elif len(pred_shape) > 1 and pred_shape[1] == 1 and len(target.shape) > 1 and target.shape[1] == 1:
+        n = n.squeeze(1)
+        target = target.squeeze(1)
+    
     loss = loss_fct(n, target)
+    
+    # 确保返回的n是一维张量，方便后续计算AUC
+    if len(n.shape) > 1:
+        n = n.squeeze(-1)
+    
     return n, loss
 
 

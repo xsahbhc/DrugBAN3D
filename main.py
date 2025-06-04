@@ -19,6 +19,7 @@ from configs import get_cfg_defaults
 from trainer import Trainer
 from dataloader import DTIDataset, MultiDataLoader
 from dataloader_3d import get_protein_ligand_dataloader, get_precomputed_graph_dataloader, get_loader
+from dataloader_3d_augmented import get_augmented_dataloader  # 导入增强数据加载器
 from models import DrugBAN
 from drugban_3d import DrugBAN3D
 from torch.utils.data import DataLoader
@@ -50,6 +51,7 @@ def parse_args():
     parser.add_argument("--use_3d", action="store_true", help="使用3D数据和模型")
     parser.add_argument("--data_3d_root", type=str, help="3D数据根目录")
     parser.add_argument("--data_3d_label", type=str, help="3D数据标签文件")
+    parser.add_argument("--use_augmented", action="store_true", help="使用增强后的数据")
     
     # 交叉验证参数
     parser.add_argument("--cv_fold", type=int, default=0, help="当前交叉验证折数(1-based)")
@@ -131,6 +133,10 @@ def main():
         print(f"使用交叉验证: 当前第{cv_fold}折，共{cv_total_folds}折")
     
     # 准备数据
+    training_generator = None
+    val_generator = None
+    test_generator = None
+    
     if cfg.MODEL_TYPE == "DrugBAN":
         # 使用原始DrugBAN数据加载方式
         dataFolder = f'{cfg.PATH.DATA_DIR}/{args.data}'
@@ -199,85 +205,108 @@ def main():
                     # 打乱数据
                     all_data_df = all_data_df.sample(frac=1, random_state=args.seed).reset_index(drop=True)
                     
-                    # 计算每折大小
+                    # 计算每折的大小
                     fold_size = len(all_data_df) // cv_total_folds
                     
-                    # 划分当前折
+                    # 划分当前折的验证集
                     val_start = (cv_fold - 1) * fold_size
                     val_end = cv_fold * fold_size if cv_fold < cv_total_folds else len(all_data_df)
                     
-                    # 创建验证集和训练集
+                    # 划分训练集和验证集
                     val_df = all_data_df.iloc[val_start:val_end].reset_index(drop=True)
-                    train_df = pd.concat([
-                        all_data_df.iloc[:val_start],
-                        all_data_df.iloc[val_end:]
-                    ]).reset_index(drop=True)
+                    train_df = pd.concat([all_data_df.iloc[:val_start], all_data_df.iloc[val_end:]]).reset_index(drop=True)
                     
                     # 测试集保持不变
                     test_df = pd.read_csv(cfg.DATA.TEST_FILE)
                 else:
-                    # 不使用交叉验证，直接读取预设的训练集和验证集
+                    # 常规训练，直接使用预划分的数据
                     train_df = pd.read_csv(cfg.DATA.TRAIN_FILE)
                     val_df = pd.read_csv(cfg.DATA.VAL_FILE)
                     test_df = pd.read_csv(cfg.DATA.TEST_FILE)
                 
-                print(f"分层数据集: 训练集 {len(train_df)} 样本, 验证集 {len(val_df)} 样本, 测试集 {len(test_df)} 样本")
-                print(f"正样本比例: 训练集 {train_df['label'].mean():.2%}, 验证集 {val_df['label'].mean():.2%}, 测试集 {test_df['label'].mean():.2%}")
+                # 打印数据集统计信息
+                train_samples = len(train_df)
+                val_samples = len(val_df)
+                test_samples = len(test_df)
                 
-                # 创建带标签的蛋白质-配体数据集
-                train_dataset = ProteinLigandDataset(
-                    root_dir=cfg.DATA_3D.ROOT_DIR,
-                    is_test=False,
-                    dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                # 计算正样本比例
+                train_pos = train_df['label'].sum()
+                val_pos = val_df['label'].sum()
+                test_pos = test_df['label'].sum()
+                
+                train_pos_ratio = train_pos / train_samples * 100
+                val_pos_ratio = val_pos / val_samples * 100
+                test_pos_ratio = test_pos / test_samples * 100
+                
+                print(f"数据集: 训练集 {train_samples} 样本, 验证集 {val_samples} 样本, 测试集 {test_samples} 样本")
+                print(f"正样本比例: 训练集 {train_pos_ratio:.2f}%, 验证集 {val_pos_ratio:.2f}%, 测试集 {test_pos_ratio:.2f}%")
+                
+                # 检查是否使用增强数据集
+                if args.use_augmented or hasattr(cfg.PATH, 'CACHE_DIR') and cfg.PATH.CACHE_DIR and 'augmented' in cfg.PATH.CACHE_DIR:
+                    print("使用增强数据集进行训练...")
+                    # 加载增强数据
+                    training_generator = get_augmented_dataloader(
+                        root_dir=cfg.DATA_3D.ROOT_DIR,
+                        label_file=cfg.DATA.TRAIN_FILE,
+                        batch_size=cfg.TRAIN.BATCH_SIZE,
+                        shuffle=True,
+                        num_workers=num_workers,
+                        is_test=False,
                     cache_dir=cfg.PATH.CACHE_DIR
                 )
-                train_dataset.complex_ids = train_df['complex_id'].values
-                train_dataset.labels = train_df['label'].values
-                
-                val_dataset = ProteinLigandDataset(
-                    root_dir=cfg.DATA_3D.ROOT_DIR,
-                    is_test=False,
-                    dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                    
+                    val_generator = get_augmented_dataloader(
+                        root_dir=cfg.DATA_3D.ROOT_DIR,
+                        label_file=cfg.DATA.VAL_FILE,
+                        batch_size=cfg.TRAIN.BATCH_SIZE,
+                        shuffle=False,
+                        num_workers=num_workers,
+                        is_test=False,
                     cache_dir=cfg.PATH.CACHE_DIR
                 )
-                val_dataset.complex_ids = val_df['complex_id'].values
-                val_dataset.labels = val_df['label'].values
                 
-                test_dataset = ProteinLigandDataset(
-                    root_dir=cfg.DATA_3D.ROOT_DIR,
-                    is_test=False,
-                    dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                    test_generator = get_augmented_dataloader(
+                        root_dir=cfg.DATA_3D.ROOT_DIR,
+                        label_file=cfg.DATA.TEST_FILE,
+                        batch_size=cfg.TRAIN.BATCH_SIZE,
+                        shuffle=False,
+                        num_workers=num_workers,
+                        is_test=True,
                     cache_dir=cfg.PATH.CACHE_DIR
                 )
-                test_dataset.complex_ids = test_df['complex_id'].values
-                test_dataset.labels = test_df['label'].values
-                
-                # 创建数据加载器
-                training_generator = DataLoader(
-                    dataset=train_dataset,
+                else:
+                    # 使用标准数据加载器
+                    print("使用标准数据集进行训练...")
+                    training_generator = get_loader(
+                        cfg.DATA_3D.ROOT_DIR,
+                        label_file=cfg.DATA.TRAIN_FILE,
                     batch_size=cfg.TRAIN.BATCH_SIZE,
                     shuffle=True,
                     num_workers=num_workers,
-                    collate_fn=filter_none_collate_fn
+                        dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                        cache_dir=cfg.PATH.CACHE_DIR
                 )
                 
-                val_generator = DataLoader(
-                    dataset=val_dataset,
+                    val_generator = get_loader(
+                        cfg.DATA_3D.ROOT_DIR,
+                        label_file=cfg.DATA.VAL_FILE,
                     batch_size=cfg.TRAIN.BATCH_SIZE,
                     shuffle=False,
                     num_workers=num_workers,
-                    collate_fn=filter_none_collate_fn
+                        dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                        cache_dir=cfg.PATH.CACHE_DIR
                 )
                 
-                test_generator = DataLoader(
-                    dataset=test_dataset,
+                    test_generator = get_loader(
+                        cfg.DATA_3D.ROOT_DIR,
+                        label_file=cfg.DATA.TEST_FILE,
                     batch_size=cfg.TRAIN.BATCH_SIZE,
                     shuffle=False,
                     num_workers=num_workers,
-                    collate_fn=filter_none_collate_fn
+                        dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                        cache_dir=cfg.PATH.CACHE_DIR
                 )
                 
-                print("成功创建训练、验证和测试数据加载器")
             else:
                 # 首先尝试使用get_loader函数，它会自动处理训练/验证/测试集划分
                 training_generator, val_generator, test_generator = get_loader(
@@ -422,14 +451,10 @@ def main():
     # 创建训练器
     trainer = Trainer(
         model=model, 
-        optim=optimizer,
-        device=device, 
         train_dataloader=training_generator,
         val_dataloader=val_generator,
         test_dataloader=test_generator,
-        experiment=experiment,
-        pos_weight=pos_weight,
-        **cfg
+        config=cfg
     )
     
     # 加载模型权重（如果指定了）
