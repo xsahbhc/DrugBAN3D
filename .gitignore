@@ -4,3 +4,4 @@ __pycache__/
 runlog/
 augmented_labels/**
 cached_graphs_augmented/**
+data/**

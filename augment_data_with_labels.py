@@ -21,6 +21,7 @@ import multiprocessing as mp
 import time
 import glob
 import warnings
+import traceback
 
 # 设置随机种子，保证结果可复现
 def set_random_seed(seed=42):
@@ -169,9 +170,9 @@ def augment_graph(graph, augment_type='rotate', params=None):
     
     if augment_type == 'rotate' or augment_type == 'combined':
         # 减小旋转范围，使增强更温和
-        angle_x = np.random.uniform(-np.pi/6, np.pi/6)  # 30度范围
-        angle_y = np.random.uniform(-np.pi/6, np.pi/6)
-        angle_z = np.random.uniform(-np.pi/6, np.pi/6)
+        angle_x = np.random.uniform(-np.pi/9, np.pi/9)  # ±20度范围，更加温和
+        angle_y = np.random.uniform(-np.pi/9, np.pi/9)
+        angle_z = np.random.uniform(-np.pi/9, np.pi/9)
         
         # 仅旋转配体节点，保持蛋白质不变
         if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
@@ -196,7 +197,7 @@ def augment_graph(graph, augment_type='rotate', params=None):
     
     if augment_type == 'jitter' or augment_type == 'combined':
         # 减小扰动幅度
-        scale = params.get('jitter_scale', 0.05)  # 默认值降低到0.05
+        scale = params.get('jitter_scale', 0.03)  # 默认值降低到0.03
         
         # 仅对配体节点添加扰动，不扰动蛋白质
         if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
@@ -225,7 +226,7 @@ def augment_graph(graph, augment_type='rotate', params=None):
     
     if augment_type == 'edge_dropout' or augment_type == 'combined':
         # 减小边抽样比例
-        edge_dropout_ratio = params.get('edge_dropout_ratio', 0.02)  # 减小默认比例到0.02
+        edge_dropout_ratio = params.get('edge_dropout_ratio', 0.01)  # 减小默认比例到0.01
         augmented_graph = random_remove_edges(augmented_graph, ratio=edge_dropout_ratio)
     
     return augmented_graph
@@ -248,63 +249,64 @@ def process_complex(args):
             return complex_id, False, "缓存文件中没有图数据"
         
         # 生成原始样本的ID
-        original_id = f"{complex_id}_orig"
-        # 先保存原始图（无增强），确保包含标签
-        original_output_file = os.path.join(output_dir, f"{original_id}.pt")
-        # 标签一定要是浮点型，避免类型问题
-        torch.save({
-            'graph': graph, 
-            'label': float(label),
-            'complex_id': original_id
-        }, original_output_file)
+        orig_id = f"{complex_id}_orig"
         
-        # 确定此样本的增强次数
+        # 保存原始图，使用新的ID
+        orig_data = {
+            'graph': graph,
+            'label': label
+        }
+        out_file = os.path.join(output_dir, f"{orig_id}.pt")
+        torch.save(orig_data, out_file)
+        
+        # 确定增强次数
         augment_count = pos_augment_count if is_positive else neg_augment_count
         
-        # 如果不需要增强，直接返回
-        if augment_count <= 0:
-            return complex_id, True, "无需增强"
-        
-        # 执行数据增强
-        augmented_count = 0
+        # 执行增强
         for i in range(augment_count):
             # 随机选择增强类型
-            augment_type = random.choice(augment_types)
+            if augment_types is None:
+                # 根据任务特点，配置更适合的增强类型概率分布
+                # 对于药物-蛋白质相互作用，分子的空间构象尤为重要，因此以旋转为主
+                rand_val = random.random()
+                if rand_val < 0.5:  # 50%概率使用旋转
+                    aug_type = 'rotate'
+                    params = {'rotation_strength': 0.7}  # 控制旋转幅度
+                elif rand_val < 0.8:  # 30%概率使用轻微扰动
+                    aug_type = 'jitter'
+                    params = {'jitter_scale': 0.03}  # 小幅度扰动
+                elif rand_val < 0.9:  # 10%概率使用边删除
+                    aug_type = 'edge_dropout'
+                    params = {'edge_dropout_ratio': 0.01}  # 很小的边删除率
+                else:  # 10%概率使用组合增强
+                    aug_type = 'combined'
+                    params = {
+                        'jitter_scale': 0.02,  # 组合时进一步降低扰动幅度
+                        'edge_dropout_ratio': 0.01
+                    }
+            else:
+                # 如果提供了指定的增强类型列表，从中随机选择
+                aug_type = random.choice(augment_types)
+                params = {}
             
-            # 设置增强参数
-            params = {}
-            if augment_type == 'jitter':
-                params['jitter_scale'] = 0.05
-            elif augment_type == 'edge_dropout':
-                params['edge_dropout_ratio'] = 0.02
-                
-            # 执行增强
-            try:
-                augmented_graph = augment_graph(graph, augment_type=augment_type, params=params)
-                
-                # 保存增强后的图（确保包含标签信息）
-                aug_id = f"{complex_id}_aug{i+1}"
-                aug_output_file = os.path.join(output_dir, f"{aug_id}.pt")
-                
-                # 标签信息必须和原始标签一致，且必须是浮点型
-                torch.save({
-                    'graph': augmented_graph, 
-                    'label': float(label), 
-                    'augment_type': augment_type,
-                    'complex_id': aug_id, 
-                    'base_id': complex_id
-                }, aug_output_file)
-                
-                augmented_count += 1
-            except Exception as e:
-                # 忽略单个增强失败，继续处理
-                print(f"警告: '{complex_id}' 的增强 {augment_type} 失败: {str(e)}")
-                continue
-                
-        return complex_id, True, f"增强 {augmented_count}/{augment_count} 成功"
+            # 应用增强变换
+            augmented_graph = augment_graph(graph, aug_type, params)
+            
+            # 保存增强后的图
+            aug_id = f"{complex_id}_aug{i+1}"
+            aug_data = {
+                'graph': augmented_graph,
+                'label': label,
+                'augmentation': {'type': aug_type, 'params': params}
+            }
+            aug_file = os.path.join(output_dir, f"{aug_id}.pt")
+            torch.save(aug_data, aug_file)
+            
+        return complex_id, True, f"成功生成{augment_count}个增强样本"
         
     except Exception as e:
-        return complex_id, False, str(e)
+        error_msg = f"增强失败: {str(e)}\n{traceback.format_exc()}"
+        return complex_id, False, error_msg
 
 def augment_data(cache_dir, output_dir, label_file, pos_augment_count=3, neg_augment_count=1, num_workers=8, augment_types=None):
     """
@@ -415,17 +417,12 @@ def augment_data(cache_dir, output_dir, label_file, pos_augment_count=3, neg_aug
 # 第二部分：标签生成相关函数
 ###########################################
 
-def create_augmented_labels(cache_dir, original_labels_file, output_dir):
-    """为增强数据创建标签文件"""
+def create_augmented_labels(cache_dir, original_labels_file, output_dir, train_label_file=None, val_label_file=None, test_label_file=None):
+    """为增强数据创建标签文件，保持测试集不变"""
     # 创建输出目录（如果不存在）
     os.makedirs(output_dir, exist_ok=True)
     
-    # 从缓存目录读取所有PT文件（包括原始和增强文件）
-    print(f"正在从缓存目录 {cache_dir} 中读取增强数据...")
-    cache_files = glob.glob(os.path.join(cache_dir, "*.pt"))
-    print(f"找到 {len(cache_files)} 个缓存文件")
-    
-    # 读取原始标签文件，创建ID到标签的映射
+    # 读取原始标签文件
     print(f"读取原始标签文件: {original_labels_file}")
     try:
         original_labels = pd.read_csv(original_labels_file)
@@ -439,6 +436,32 @@ def create_augmented_labels(cache_dir, original_labels_file, output_dir):
     except Exception as e:
         print(f"读取标签文件失败: {str(e)}")
         return None
+    
+    # 如果提供了预划分的标签文件，直接使用
+    train_df = None
+    val_df = None
+    test_df = None
+    
+    # 读取测试集
+    if test_label_file and os.path.exists(test_label_file):
+        print(f"使用预划分的测试集标签文件: {test_label_file}")
+        test_df = pd.read_csv(test_label_file)
+        print(f"测试集包含 {len(test_df)} 条记录")
+        # 确保测试集有正确的列名
+        if 'complex_id' not in test_df.columns:
+            raise ValueError(f"测试集标签文件必须包含'complex_id'列")
+        if 'label' not in test_df.columns:
+            raise ValueError(f"测试集标签文件必须包含'label'列")
+        # 计算测试集正样本率
+        test_pos_rate = test_df['label'].sum() / len(test_df)
+        print(f"测试集正样本率: {test_pos_rate*100:.2f}%")
+    else:
+        test_pos_rate = 0.3  # 没有测试集时默认值
+    
+    # 从缓存目录读取所有PT文件（包括原始和增强文件）
+    print(f"正在从缓存目录 {cache_dir} 中读取增强数据...")
+    cache_files = glob.glob(os.path.join(cache_dir, "*.pt"))
+    print(f"找到 {len(cache_files)} 个缓存文件")
     
     # 创建一个空的列表来存储增强后的标签
     augmented_labels = []
@@ -482,7 +505,6 @@ def create_augmented_labels(cache_dir, original_labels_file, output_dir):
                 continue
             
             # 其次：如果没有缓存标签，尝试从标签映射查找
-            # 在原始标签中查找
             if base_id in original_label_map:
                 label = original_label_map[base_id]
                 augmented_labels.append({
@@ -524,43 +546,156 @@ def create_augmented_labels(cache_dir, original_labels_file, output_dir):
     neg_ratio = neg_count / len(augmented_df) * 100
     print(f"正样本: {pos_count} ({pos_ratio:.2f}%), 负样本: {neg_count} ({neg_ratio:.2f}%)")
     
-    # 获取所有基础ID列表，用于分割数据集
-    all_base_ids = list(base_id_mapping.keys())
-    
-    # 对基础ID进行随机打乱
-    random.shuffle(all_base_ids)
-    
-    # 按照75%训练集、15%验证集、10%测试集比例划分基础ID
-    train_split = int(len(all_base_ids) * 0.75)
-    valid_split = int(len(all_base_ids) * 0.90)  # 前75%为训练集，接下来15%为验证集
-    
-    train_base_ids = set(all_base_ids[:train_split])
-    valid_base_ids = set(all_base_ids[train_split:valid_split])
-    test_base_ids = set(all_base_ids[valid_split:])
-    
-    print(f"数据集划分: 训练集 {len(train_base_ids)} 分子, 验证集 {len(valid_base_ids)} 分子, 测试集 {len(test_base_ids)} 分子")
-    
-    # 根据基础ID分配样本到不同数据集
-    train_samples = []
-    valid_samples = []
-    test_samples = []
-    
-    # 遍历所有样本，根据基础ID分配到不同数据集
-    for _, row in augmented_df.iterrows():
-        base_id = row['base_id']
-        sample_data = {'complex_id': row['complex_id'], 'label': row['label']}
-        
-        if base_id in train_base_ids:
-            train_samples.append(sample_data)
-        elif base_id in valid_base_ids:
-            valid_samples.append(sample_data)
-        elif base_id in test_base_ids:
-            test_samples.append(sample_data)
-    
-    # 创建训练、验证和测试DataFrame
-    train_df = pd.DataFrame(train_samples)
-    valid_df = pd.DataFrame(valid_samples)
-    test_df = pd.DataFrame(test_samples)
+    # 如果没有预划分的训练和验证标签文件
+    if train_df is None or val_df is None:
+        # 使用预划分的测试集
+        if test_df is not None:
+            # 移除测试集使用的ID
+            test_ids = set(test_df['complex_id'].values)
+            remaining_df = augmented_df[~augmented_df['base_id'].isin(test_ids)]
+            
+            # 获取剩余的基础ID列表，用于分割训练和验证集
+            remaining_base_ids = list(set(remaining_df['base_id'].values))
+            
+            # 对基础ID进行随机打乱
+            random.shuffle(remaining_base_ids)
+            
+            # 按照85%训练集、15%验证集比例划分剩余基础ID（因为测试集已经单独分出）
+            train_split = int(len(remaining_base_ids) * 0.85)
+            
+            train_base_ids = set(remaining_base_ids[:train_split])
+            valid_base_ids = set(remaining_base_ids[train_split:])
+            
+            print(f"数据集划分: 训练集 {len(train_base_ids)} 分子, 验证集 {len(valid_base_ids)} 分子, 测试集 {len(test_ids)} 分子")
+            
+            # 根据基础ID分配样本到不同数据集
+            train_samples = []
+            valid_samples = []
+            
+            # 先将所有样本按基础ID分配到各自数据集
+            for _, row in augmented_df.iterrows():
+                base_id = row['base_id']
+                sample_data = {'complex_id': row['complex_id'], 'label': row['label']}
+                
+                if base_id in train_base_ids:
+                    train_samples.append(sample_data)
+                elif base_id in valid_base_ids:
+                    valid_samples.append(sample_data)
+            
+            # 创建训练和验证DataFrame
+            train_df = pd.DataFrame(train_samples)
+            
+            # 为验证集调整正负样本比例，使其接近测试集的分布
+            valid_df_full = pd.DataFrame(valid_samples)
+            valid_pos = valid_df_full[valid_df_full['label'] > 0]
+            valid_neg = valid_df_full[valid_df_full['label'] <= 0]
+            
+            # 计算验证集当前正样本率和目标正样本率
+            current_valid_pos_rate = len(valid_pos) / len(valid_df_full)
+            target_pos_rate = test_pos_rate  # 与测试集相同
+            
+            print(f"验证集当前正样本率: {current_valid_pos_rate*100:.2f}%, 目标正样本率: {target_pos_rate*100:.2f}%")
+            
+            # 如果验证集正样本率高于目标，需要随机抽样一部分正样本
+            if current_valid_pos_rate > target_pos_rate:
+                # 计算应保留的正样本数
+                target_pos_count = int(len(valid_neg) * target_pos_rate / (1 - target_pos_rate))
+                print(f"调整验证集: 从{len(valid_pos)}个正样本中抽样{target_pos_count}个")
+                valid_pos = valid_pos.sample(n=min(target_pos_count, len(valid_pos)), random_state=42)
+                # 合并正负样本
+                valid_df = pd.concat([valid_pos, valid_neg])
+            # 如果验证集正样本率低于目标，需要随机抽样一部分负样本
+            elif current_valid_pos_rate < target_pos_rate:
+                # 计算应保留的负样本数
+                target_neg_count = int(len(valid_pos) * (1 - target_pos_rate) / target_pos_rate)
+                print(f"调整验证集: 从{len(valid_neg)}个负样本中抽样{target_neg_count}个")
+                valid_neg = valid_neg.sample(n=min(target_neg_count, len(valid_neg)), random_state=42)
+                # 合并正负样本
+                valid_df = pd.concat([valid_pos, valid_neg])
+            else:
+                # 正样本率已经匹配，无需调整
+                valid_df = valid_df_full
+            
+            # 随机打乱验证集
+            valid_df = valid_df.sample(frac=1, random_state=42).reset_index(drop=True)
+            
+            print(f"调整后验证集正样本率: {valid_df['label'].sum() / len(valid_df) * 100:.2f}%")
+            
+        else:
+            # 没有预划分的测试集，自行划分
+            # 获取所有基础ID列表，用于分割数据集
+            all_base_ids = list(base_id_mapping.keys())
+            
+            # 对基础ID进行随机打乱
+            random.shuffle(all_base_ids)
+            
+            # 按照75%训练集、15%验证集、10%测试集比例划分基础ID
+            train_split = int(len(all_base_ids) * 0.75)
+            valid_split = int(len(all_base_ids) * 0.90)  # 前75%为训练集，接下来15%为验证集
+            
+            train_base_ids = set(all_base_ids[:train_split])
+            valid_base_ids = set(all_base_ids[train_split:valid_split])
+            test_base_ids = set(all_base_ids[valid_split:])
+            
+            print(f"数据集划分: 训练集 {len(train_base_ids)} 分子, 验证集 {len(valid_base_ids)} 分子, 测试集 {len(test_base_ids)} 分子")
+            
+            # 根据基础ID分配样本到不同数据集
+            train_samples = []
+            valid_samples = []
+            test_samples = []
+            
+            # 遍历所有样本，根据基础ID分配到不同数据集
+            for _, row in augmented_df.iterrows():
+                base_id = row['base_id']
+                sample_data = {'complex_id': row['complex_id'], 'label': row['label']}
+                
+                if base_id in train_base_ids:
+                    train_samples.append(sample_data)
+                elif base_id in valid_base_ids:
+                    valid_samples.append(sample_data)
+                elif base_id in test_base_ids:
+                    test_samples.append(sample_data)
+            
+            # 创建训练、验证和测试DataFrame
+            train_df = pd.DataFrame(train_samples)
+            valid_df_full = pd.DataFrame(valid_samples)
+            test_df = pd.DataFrame(test_samples)
+            
+            # 为验证集调整正负样本比例，使其接近测试集的分布
+            test_pos_rate = test_df['label'].sum() / len(test_df)
+            valid_pos = valid_df_full[valid_df_full['label'] > 0]
+            valid_neg = valid_df_full[valid_df_full['label'] <= 0]
+            
+            # 计算验证集当前正样本率和目标正样本率
+            current_valid_pos_rate = len(valid_pos) / len(valid_df_full)
+            target_pos_rate = test_pos_rate  # 与测试集相同
+            
+            print(f"验证集当前正样本率: {current_valid_pos_rate*100:.2f}%, 目标正样本率: {target_pos_rate*100:.2f}%")
+            
+            # 如果验证集正样本率高于目标，需要随机抽样一部分正样本
+            if current_valid_pos_rate > target_pos_rate:
+                # 计算应保留的正样本数
+                target_pos_count = int(len(valid_neg) * target_pos_rate / (1 - target_pos_rate))
+                print(f"调整验证集: 从{len(valid_pos)}个正样本中抽样{target_pos_count}个")
+                valid_pos = valid_pos.sample(n=min(target_pos_count, len(valid_pos)), random_state=42)
+                # 合并正负样本
+                valid_df = pd.concat([valid_pos, valid_neg])
+            # 如果验证集正样本率低于目标，需要随机抽样一部分负样本
+            elif current_valid_pos_rate < target_pos_rate:
+                # 计算应保留的负样本数
+                target_neg_count = int(len(valid_pos) * (1 - target_pos_rate) / target_pos_rate)
+                print(f"调整验证集: 从{len(valid_neg)}个负样本中抽样{target_neg_count}个")
+                valid_neg = valid_neg.sample(n=min(target_neg_count, len(valid_neg)), random_state=42)
+                # 合并正负样本
+                valid_df = pd.concat([valid_pos, valid_neg])
+            else:
+                # 正样本率已经匹配，无需调整
+                valid_df = valid_df_full
+            
+            # 随机打乱验证集
+            valid_df = valid_df.sample(frac=1, random_state=42).reset_index(drop=True)
+            
+            print(f"调整后验证集正样本率: {valid_df['label'].sum() / len(valid_df) * 100:.2f}%")
     
     # 保存分割后的标签文件
     train_label_file = os.path.join(output_dir, "train_augmented.csv")
@@ -601,11 +736,14 @@ def main():
     parser.add_argument("--output_dir", required=True, help="增强后的缓存图保存目录")
     parser.add_argument("--label_file", required=True, help="原始标签文件路径")
     parser.add_argument("--train_label", required=True, help="训练集标签文件路径")
+    parser.add_argument("--val_label", default=None, help="验证集标签文件路径")
+    parser.add_argument("--test_label", default=None, help="测试集标签文件路径")
     parser.add_argument("--labels_output_dir", default=None, help="增强标签文件保存目录")
     parser.add_argument("--pos_augment", type=int, default=3, help="每个正样本的增强次数")
     parser.add_argument("--neg_augment", type=int, default=1, help="每个负样本的增强次数")
     parser.add_argument("--num_workers", type=int, default=8, help="并行处理的工作线程数")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
+    parser.add_argument("--augment_test", action="store_true", help="是否增强测试集（默认不增强）")
     args = parser.parse_args()
     
     # 设置随机种子
@@ -624,12 +762,15 @@ def main():
     print(f"增强缓存目录: {args.output_dir}")
     print(f"原始标签文件: {args.label_file}")
     print(f"训练标签文件: {args.train_label}")
+    print(f"验证标签文件: {args.val_label if args.val_label else '未指定'}")
+    print(f"测试标签文件: {args.test_label if args.test_label else '未指定'}")
     print(f"增强标签目录: {args.labels_output_dir}")
+    print(f"是否增强测试集: {'是' if args.augment_test else '否'}")
     print("=" * 80 + "\n")
     
     # 步骤1：数据增强
     print("步骤1：执行数据增强...")
-    success = augment_data(
+    success, augmented_files = augment_data(
         args.cache_dir,
         args.output_dir,
         args.label_file,
@@ -647,19 +788,23 @@ def main():
     print("步骤2：为增强数据生成标签文件...")
     augmented_df = create_augmented_labels(
         args.output_dir,
+        args.label_file,
+        args.labels_output_dir,
         args.train_label,
-        args.labels_output_dir
+        args.val_label,
+        args.test_label
     )
     
-    if augmented_df is None or len(augmented_df) == 0:
-        print("错误: 标签生成失败或生成的标签文件为空")
+    if augmented_df is None:
+        print("错误: 标签生成失败")
         return 1
-    
+        
     print("\n" + "=" * 80)
-    print("数据增强与标签生成流程完成!")
-    print(f"增强缓存目录: {args.output_dir}")
-    print(f"增强标签目录: {args.labels_output_dir}")
-    print("=" * 80)
+    print("数据增强与标签生成完成!")
+    print(f"增强后的缓存文件保存在: {args.output_dir}")
+    print(f"增强后的标签文件保存在: {args.labels_output_dir}")
+    print(f"结束时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 80 + "\n")
     
     return 0
 
@@ -679,6 +824,5 @@ if __name__ == "__main__":
         exit(1)
     except Exception as e:
         print(f"\n程序执行出错: {str(e)}")
-        import traceback
         traceback.print_exc()
         exit(1) 

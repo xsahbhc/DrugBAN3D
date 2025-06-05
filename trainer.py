@@ -736,9 +736,9 @@ class Trainer(object):
                 self.optim, 
                 mode='max',          # 监控指标增大时(AUROC)表示改进
                 factor=0.5,          # 学习率降低为之前的一半
-                patience=5,          # 5轮不改善才降低学习率
+                patience=4,          # 4轮不改善才降低学习率（批次增大，轮次减少）
                 verbose=True,        # 打印学习率变化
-                threshold=0.0005,    # 指标改善阈值
+                threshold=0.001,     # 指标改善阈值增大，适应更大批次
                 min_lr=1e-6          # 最小学习率限制
             )
             print("使用ReduceLROnPlateau学习率调度器，监控验证集AUROC")

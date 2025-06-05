@@ -21,17 +21,17 @@ DATA:
   TEST_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv"
 
 TRAIN:
-  D_LEARNING_RATE: 0.00018  # 最佳模型的学习率
-  G_LEARNING_RATE: 0.0001   # 生成器学习率
-  BATCH_SIZE: 32  # 批次大小
+  D_LEARNING_RATE: 0.00036  # 批次大小翻倍，学习率相应增加
+  G_LEARNING_RATE: 0.0002   # 批次大小翻倍，学习率相应增加
+  BATCH_SIZE: 64  # 批次大小增加到64
   D_STEPS_PER_G_STEP: 1
   RESUME_CHECKPOINT: ""
   EPOCH: 100  # 总训练轮数
-  GRADIENT_ACCUMULATE_STEPS: 4  # 梯度累积步数
+  GRADIENT_ACCUMULATE_STEPS: 2  # 批次翻倍，梯度累积步数减半
   GRADIENT_CLIP_NORM: 1.0  # 梯度裁剪阈值
   WEIGHT_DECAY: 0.0003  # 权重衰减值
   LABEL_SMOOTHING: 0.05  # 标签平滑参数
-  POS_WEIGHT: 2.3  # 正样本权重
+  POS_WEIGHT: 1.05  # 正样本权重
 
 DRUG:
   ATOM_MAX: 50
@@ -83,11 +83,11 @@ COMET:
 
 SOLVER:
   MAX_EPOCH: 100
-  BATCH_SIZE: 32
+  BATCH_SIZE: 64  # 与TRAIN部分保持一致
   USE_MIXED_PRECISION: False  # 不使用混合精度训练
   LR_SCHEDULER: True
   LR_SCHEDULER_TYPE: "plateau"  # 使用plateau学习率调度器
-  LR_WARMUP_EPOCHS: 5  # 学习率预热轮数
+  LR_WARMUP_EPOCHS: 3  # 学习率预热轮数减少
   GRADIENT_CLIP_NORM: 1.0
   SEED: 42  # 随机种子
 
