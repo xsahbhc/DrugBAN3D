@@ -116,8 +116,8 @@ class ProteinLigandDataset(Dataset):
                     # 从缓存加载数据
                     data = torch.load(cache_file, map_location='cpu')
                     self.cache_hits += 1
-                    # 每100次缓存命中打印一次统计信息
-                    if self.cache_hits % 100 == 0:
+                    # 减少缓存统计输出频率（仅在详细模式下每1000次打印一次）
+                    if hasattr(self, 'verbose') and self.verbose and self.cache_hits % 1000 == 0:
                         total = self.cache_hits + self.cache_misses
                         hit_rate = self.cache_hits / total * 100 if total > 0 else 0
                         print(f"缓存统计 - 命中: {self.cache_hits}, 未命中: {self.cache_misses}, 命中率: {hit_rate:.1f}%")

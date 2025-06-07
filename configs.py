@@ -48,6 +48,8 @@ _C.RESULT.SAVE_MODEL = True
 _C.RESULT.SAVE_EACH_EPOCH = False  # 是否每个epoch保存一次结果
 _C.RESULT.SAVE_BEST_ONLY = False   # 是否仅保存最佳模型
 _C.RESULT.USE_STATE_DICT = True    # 是否使用state_dict保存模型
+_C.RESULT.SAVE_TEST_PREDICTIONS = True  # 是否保存测试预测结果
+_C.RESULT.SAVE_TEST_DETAILS = True      # 是否保存详细测试信息
 
 # 领域适应配置
 _C.DA = CN()
@@ -144,6 +146,18 @@ _C.FOCAL_LOSS_ALPHA = 0.25  # 焦点损失alpha参数
 # 特征正则化配置
 _C.USE_FEATURE_REGULARIZATION = False  # 是否使用特征正则化
 _C.FEATURE_REGULARIZATION_WEIGHT = 0.01  # 特征正则化权重
+
+# 测试相关配置
+_C.TEST = CN()
+_C.TEST.USE_ORIGINAL_TEST_DATA = True  # 使用原始测试数据（非增强）
+_C.TEST.DEBUG_MODE = False             # 测试调试模式
+_C.TEST.VERBOSE = True                 # 详细测试输出
+_C.TEST.BATCH_SIZE = 64                # 测试批次大小
+
+# 顶级测试调试模式配置
+_C.DEBUG_MODE = False  # 全局调试模式开关
+_C.USE_ORIGINAL_TEST_DATA = True  # 使用原始测试数据
+_C.VERBOSE = True  # 详细输出模式
 
 def get_cfg_defaults():
     """Get a yacs CfgNode object with default values."""

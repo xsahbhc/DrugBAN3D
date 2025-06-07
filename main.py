@@ -14,6 +14,7 @@ import random
 import pandas as pd
 import warnings
 from time import time
+import time as time_module
 from yacs.config import CfgNode
 from configs import get_cfg_defaults
 from trainer import Trainer
@@ -57,6 +58,11 @@ def parse_args():
     parser.add_argument("--cv_fold", type=int, default=0, help="当前交叉验证折数(1-based)")
     parser.add_argument("--cv_total_folds", type=int, default=0, help="交叉验证总折数")
     
+    # 测试相关参数
+    parser.add_argument("--test_only", action="store_true", help="仅执行测试，不进行训练")
+    parser.add_argument("--verbose", action="store_true", help="输出详细日志信息")
+    parser.add_argument("--save_predictions", action="store_true", help="保存测试预测结果")
+    
     return parser.parse_args()
 
 
@@ -65,9 +71,18 @@ def read_config(args):
     cfg = get_cfg_defaults()
     cfg.merge_from_file(args.cfg_file)
     
-    # 设置输出目录
+    # 设置输出目录 - 优先使用命令行参数
     if args.output_dir is not None:
         cfg.RESULT.OUTPUT_DIR = args.output_dir
+        print(f"使用命令行指定的输出目录: {args.output_dir}")
+    elif not cfg.RESULT.OUTPUT_DIR or cfg.RESULT.OUTPUT_DIR == "":
+        # 如果配置文件中没有设置OUTPUT_DIR或为空，则使用时间戳创建目录
+        timestamp = time_module.strftime("%Y%m%d_%H%M%S")
+        default_output_dir = f"result/DrugBAN3D_run_{timestamp}"
+        cfg.RESULT.OUTPUT_DIR = default_output_dir
+        print(f"未指定输出目录，使用默认时间戳目录: {default_output_dir}")
+    else:
+        print(f"使用配置文件中的输出目录: {cfg.RESULT.OUTPUT_DIR}")
     
     # 设置标签 - 更安全的方式处理tag参数
     if args.tag is not None:
@@ -84,7 +99,32 @@ def read_config(args):
         if args.data_3d_label:
             cfg.DATA_3D.LABEL_FILE = args.data_3d_label
     
+    # 添加测试相关配置
+    if args.test_only:
+        cfg.TEST_ONLY = True
+    if args.verbose:
+        cfg.VERBOSE = True
+    if args.save_predictions:
+        cfg.SAVE_PREDICTIONS = True
+    
+    # 检查并创建必要的目录结构
+    ensure_output_dir_structure(cfg.RESULT.OUTPUT_DIR)
+        
     return cfg
+
+
+def ensure_output_dir_structure(output_dir):
+    """确保输出目录结构存在"""
+    # 创建主输出目录
+    mkdir(output_dir)
+    
+    # 创建子目录
+    subdirs = ["models", "metrics", "logs", "config", "predictions"]
+    for subdir in subdirs:
+        subdir_path = os.path.join(output_dir, subdir)
+        mkdir(subdir_path)
+        
+    return output_dir
 
 
 def set_random_seed(seed):
@@ -113,6 +153,12 @@ def main():
     # 创建输出目录
     mkdir(cfg.RESULT.OUTPUT_DIR)
     
+    # 保存当前配置到输出目录
+    config_save_path = os.path.join(cfg.RESULT.OUTPUT_DIR, "config", "config_used.yaml")
+    with open(config_save_path, 'w') as f:
+        f.write(str(cfg))
+    print(f"已保存当前配置到 {config_save_path}")
+    
     # 获取设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -121,8 +167,21 @@ def main():
     experiment = None
     
     print(f"配置文件: {args.cfg_file}")
-    print(f"参数: {dict(cfg)}")
+    print(f"输出目录: {cfg.RESULT.OUTPUT_DIR}")
     print(f"运行设备: {device}")
+    
+    # 判断是否仅执行测试
+    test_only = args.test_only
+    if test_only:
+        print("测试模式: 仅执行测试，不进行训练")
+        if args.load is None:
+            print("错误: 测试模式需要指定模型路径，使用 --load 参数")
+            return None
+        
+        print(f"将使用模型: {args.load}")
+        if not os.path.exists(args.load):
+            print(f"错误: 指定的模型文件不存在: {args.load}")
+            return None
     
     # 交叉验证支持
     cv_fold = args.cv_fold
@@ -265,6 +324,7 @@ def main():
                     cache_dir=cfg.PATH.CACHE_DIR
                 )
                 
+                    # 测试集使用原始缓存目录，不使用增强缓存
                     test_generator = get_augmented_dataloader(
                         root_dir=cfg.DATA_3D.ROOT_DIR,
                         label_file=cfg.DATA.TEST_FILE,
@@ -272,8 +332,8 @@ def main():
                         shuffle=False,
                         num_workers=num_workers,
                         is_test=True,
-                    cache_dir=cfg.PATH.CACHE_DIR
-                )
+                        cache_dir="/home/work/workspace/shi_shaoqun/snap/DrugBAN-main/cached_graphs"  # 使用原始缓存
+                    )
                 else:
                     # 使用标准数据加载器
                     print("使用标准数据集进行训练...")
@@ -435,6 +495,8 @@ def main():
     # 确保结果目录正确设置
     if args.output_dir:
         cfg.RESULT.OUTPUT_DIR = args.output_dir
+        # 确保目录结构存在
+        ensure_output_dir_structure(cfg.RESULT.OUTPUT_DIR)
         
     # 梯度裁剪
     if hasattr(cfg.TRAIN, 'GRADIENT_CLIP_NORM') and cfg.TRAIN.GRADIENT_CLIP_NORM > 0:
@@ -457,34 +519,87 @@ def main():
         config=cfg
     )
     
+    # 设置experiment
+    trainer.experiment = experiment
+    
     # 加载模型权重（如果指定了）
     if args.load is not None:
+        print(f"从 {args.load} 加载模型权重")
         trainer.load_model(args.load)
     
-    # 训练模型
-    result = trainer.train()
-    
-    # 保存模型架构信息
-    with open(os.path.join(cfg.RESULT.OUTPUT_DIR, "model_architecture.txt"), "w") as wf:
-        wf.write(str(model))
-    
-    print()
-    print(f"Directory for saving result: {cfg.RESULT.OUTPUT_DIR}")
-    
-    return result
+    # 根据模式执行训练或测试
+    if test_only:
+        print("执行测试...")
+        try:
+            # 测试集评估
+            auroc, auprc, f1, sensitivity, specificity, accuracy, test_loss, threshold, precision = trainer.test(dataloader="test")
+            
+            # 输出测试结果
+            print("\n======== 测试结果 ========")
+            print(f"AUROC: {auroc:.4f}")
+            print(f"AUPRC: {auprc:.4f}")
+            print(f"F1分数: {f1:.4f}")
+            print(f"敏感度: {sensitivity:.4f}")
+            print(f"特异度: {specificity:.4f}")
+            print(f"准确率: {accuracy:.4f}")
+            print(f"精确度: {precision:.4f}")
+            print(f"最佳阈值: {threshold:.4f}")
+            print(f"测试损失: {test_loss:.4f}")
+            
+            # 将详细测试结果写入文件
+            detailed_results_file = os.path.join(cfg.RESULT.OUTPUT_DIR, "detailed_test_results.txt")
+            with open(detailed_results_file, "w") as f:
+                f.write(f"测试时间: {time_module.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"模型文件: {args.load}\n\n")
+                f.write("======== 测试结果 ========\n")
+                f.write(f"AUROC: {auroc:.6f}\n")
+                f.write(f"AUPRC: {auprc:.6f}\n")
+                f.write(f"F1分数: {f1:.6f}\n")
+                f.write(f"敏感度: {sensitivity:.6f}\n")
+                f.write(f"特异度: {specificity:.6f}\n")
+                f.write(f"准确率: {accuracy:.6f}\n")
+                f.write(f"精确度: {precision:.6f}\n")
+                f.write(f"最佳阈值: {threshold:.6f}\n")
+                f.write(f"测试损失: {test_loss:.6f}\n")
+            
+            print(f"详细测试结果已保存到: {detailed_results_file}")
+            
+            # 如果配置了Comet ML，记录测试指标
+            if experiment:
+                experiment.log_metric("test_auroc", auroc)
+                experiment.log_metric("test_auprc", auprc)
+                experiment.log_metric("test_f1", f1)
+                experiment.log_metric("test_sensitivity", sensitivity)
+                experiment.log_metric("test_specificity", specificity)
+                experiment.log_metric("test_accuracy", accuracy)
+                experiment.log_metric("test_precision", precision)
+                experiment.log_metric("test_threshold", threshold)
+                experiment.log_metric("test_loss", test_loss)
+                
+            return {
+                "auroc": auroc,
+                "auprc": auprc,
+                "f1": f1,
+                "sensitivity": sensitivity,
+                "specificity": specificity,
+                "accuracy": accuracy,
+                "precision": precision,
+                "threshold": threshold,
+                "test_loss": test_loss
+            }
+            
+        except Exception as e:
+            print(f"测试过程中出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
+    else:
+        print(f"开始训练...")
+        # 执行训练并获取测试结果
+        test_metrics = trainer.train()
+        
+        return test_metrics
 
 
-if __name__ == '__main__':
-    # 忽略特定警告
-    warnings.filterwarnings("ignore", message="invalid value encountered in divide")
-    
-    # 清空GPU缓存
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    # 计时并运行主函数
-    start_time = time()
-    result = main()
-    end_time = time()
-    
-    print(f"Total running time: {round(end_time - start_time, 2)}s")
+if __name__ == "__main__":
+    main()

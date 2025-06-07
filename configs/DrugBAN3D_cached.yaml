@@ -2,7 +2,6 @@ MODEL_TYPE: "DrugBAN3D"
 
 PATH:
   DATA_DIR: "datasets"
-  RESULT_DIR: "result/DrugBAN3D_best_config"
   CACHE_DIR: "/home/work/workspace/shi_shaoqun/snap/DrugBAN-main/cached_graphs"  # 设置预处理缓存目录
 
 # 数据集相关配置
@@ -79,7 +78,7 @@ COMET:
   USE: False
   PROJECT: "DrugBAN3D"
   WORKSPACE: "xsahbhc"
-  TAG: "best_config"
+  TAG: "time_stamped_run"
 
 SOLVER:
   MAX_EPOCH: 100
@@ -92,11 +91,20 @@ SOLVER:
   SEED: 42  # 随机种子
 
 RESULT:
-  OUTPUT_DIR: "result/DrugBAN3D_best_config"
+  OUTPUT_DIR: ""  # 空值，将由脚本动态设置带时间戳的目录
   SAVE_MODEL: True
   SAVE_EACH_EPOCH: False
   SAVE_BEST_ONLY: True
   USE_STATE_DICT: True
+  SAVE_TEST_PREDICTIONS: True  # 保存测试预测结果
+  SAVE_TEST_DETAILS: True      # 保存详细测试信息
+
+# 测试相关配置
+TEST:
+  USE_ORIGINAL_TEST_DATA: True  # 使用原始测试数据（非增强）
+  DEBUG_MODE: True              # 启用测试调试模式
+  VERBOSE: True                 # 详细测试输出
+  BATCH_SIZE: 64               # 测试批次大小
 
 # 早停配置
 USE_EARLY_STOPPING: True

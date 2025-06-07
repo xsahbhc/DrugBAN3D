@@ -154,6 +154,9 @@ class Trainer(object):
         # 是否每轮保存结果
         self.save_each_epoch = config["RESULT"].get("SAVE_EACH_EPOCH", False)
         self.save_best_only = config["RESULT"].get("SAVE_BEST_ONLY", False)
+
+        # 添加verbose属性
+        self.verbose = False  # 默认关闭详细输出
             
         # 确保DA配置存在
         if hasattr(config, "DA") and hasattr(config["DA"], "ORIGINAL_RANDOM"):
@@ -189,8 +192,12 @@ class Trainer(object):
     def train(self):
         float2str = lambda x: '%0.4f' % x
         
+        # 检查并创建子目录结构
+        logs_dir = os.path.join(self.output_dir, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        
         # 创建训练日志文件
-        log_file = os.path.join(self.output_dir, "training_log.txt")
+        log_file = os.path.join(logs_dir, "training_log.txt")
         with open(log_file, 'w') as f:
             f.write(f"训练开始时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"模型: {self.config['MODEL_TYPE']}\n")
@@ -255,8 +262,9 @@ class Trainer(object):
                 if self.save_best_only:
                     # 确保输出目录存在
                     os.makedirs(self.output_dir, exist_ok=True)
-                    torch.save(self.best_model_state,
-                           os.path.join(self.output_dir, f"best_model.pth"))
+                    best_model_path = os.path.join(self.output_dir, f"best_model.pth")
+                    torch.save(self.best_model_state, best_model_path)
+                    print(f"保存最佳模型（轮次 {self.best_epoch}）到 {best_model_path}")
                 # 重置早停计数器
                 self.early_stopping_counter = 0
             else:
@@ -269,24 +277,31 @@ class Trainer(object):
             # 只输出简洁的训练状态信息
             print(f'Epoch {self.current_epoch}/{self.max_epoch} - 训练损失: {train_loss:.4f} - 验证AUROC: {auroc:.4f} - 验证AUPRC: {auprc:.4f}')
             
-            # 更新并记录训练日志
-            with open(os.path.join(self.output_dir, "training_log.txt"), 'a') as f:
+            # 简化的训练日志记录
+            if not hasattr(self, '_log_header_written'):
+                with open(os.path.join(self.output_dir, "train.log"), 'w') as f:
+                    f.write("epoch\ttrain_loss\tval_loss\tauroc\tauprc\n")
+                self._log_header_written = True
+
+            with open(os.path.join(self.output_dir, "train.log"), 'a') as f:
                 f.write(f"{self.current_epoch}\t{train_loss:.4f}\t{val_loss:.4f}\t{auroc:.4f}\t{auprc:.4f}\n")
             
             # 检查是否需要保存当前轮次的结果
             if self.save_each_epoch:
                 self.save_epoch_result()
+        
+        # 确保在测试评估前已保存了最佳模型文件
+        if self.best_model_state is not None:
+            best_model_path = os.path.join(self.output_dir, "best_model.pth")
+            if not os.path.exists(best_model_path):
+                torch.save(self.best_model_state, best_model_path)
+                print(f"训练结束时保存最佳模型（轮次 {self.best_epoch}）到 {best_model_path}")
                 
         # 测试评估时使用最佳模型的权重
-        self.model.load_state_dict(self.best_model_state)
         auroc, auprc, f1, sensitivity, specificity, accuracy, test_loss, thred_optim, precision = self.test(dataloader="test")
         
-        # 简化：移除表格添加
-        # test_lst = ["epoch " + str(self.best_epoch)] + list(map(float2str, [auroc, auprc, f1, sensitivity, specificity,
-        #                                                                     accuracy, thred_optim, test_loss]))
-        # self.test_table.add_row(test_lst)
-        print('测试结果 (最佳模型来自Epoch ' + str(self.best_epoch) + '):')
-        print(f'AUROC: {auroc:.4f} - AUPRC: {auprc:.4f} - F1: {f1:.4f} - 敏感度: {sensitivity:.4f} - 特异度: {specificity:.4f} - 准确率: {accuracy:.4f}')
+        # 简洁的测试结果输出
+        print(f'训练完成！最佳模型来自Epoch {self.best_epoch} - AUROC: {auroc:.4f} - F1: {f1:.4f}')
         
         self.test_metrics["auroc"] = auroc
         self.test_metrics["auprc"] = auprc
@@ -304,12 +319,9 @@ class Trainer(object):
             self.experiment.log_metric("valid_best_epoch", self.best_epoch)
             self.experiment.log_metric("test_auroc", self.test_metrics["auroc"])
             self.experiment.log_metric("test_auprc", self.test_metrics["auprc"])
-            self.experiment.log_metric("test_sensitivity", self.test_metrics["sensitivity"])
-            self.experiment.log_metric("test_specificity", self.test_metrics["specificity"])
-            self.experiment.log_metric("test_accuracy", self.test_metrics["accuracy"])
-            self.experiment.log_metric("test_threshold", self.test_metrics["thred_optim"])
-            self.experiment.log_metric("test_f1", self.test_metrics["F1"])
-            self.experiment.log_metric("test_precision", self.test_metrics["Precision"])
+
+        # 简洁的完成信息
+        print(f"结果已保存到: {self.output_dir}")
         return self.test_metrics
 
     def save_epoch_result(self):
@@ -317,8 +329,18 @@ class Trainer(object):
         # 确保输出目录存在
         os.makedirs(self.output_dir, exist_ok=True)
         
+        # 检查并创建子目录结构
+        models_dir = os.path.join(self.output_dir, "models")
+        metrics_dir = os.path.join(self.output_dir, "metrics")
+        checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
+        
+        # 创建必要的子目录
+        os.makedirs(models_dir, exist_ok=True)
+        os.makedirs(metrics_dir, exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
         # 创建本轮结果目录
-        epoch_dir = os.path.join(self.output_dir, f"epoch_{self.current_epoch}")
+        epoch_dir = os.path.join(checkpoint_dir, f"epoch_{self.current_epoch}")
         os.makedirs(epoch_dir, exist_ok=True)
         
         # 保存验证指标为JSON格式
@@ -349,7 +371,7 @@ class Trainer(object):
         
             # 保存最佳模型
             if self.config["RESULT"]["SAVE_MODEL"]:
-                best_model_path = os.path.join(self.output_dir, "best_model.pth")
+                best_model_path = os.path.join(models_dir, "best_model.pth")
                 
                 if hasattr(self, 'use_state_dict') and self.use_state_dict:
                     torch.save({
@@ -363,6 +385,10 @@ class Trainer(object):
                 
                 print(f"保存最佳模型（轮次 {self.best_epoch}）到 {best_model_path}")
                 
+                # 同时在checkpoint目录中保存一份
+                checkpoint_best_path = os.path.join(epoch_dir, f"best_model_epoch_{self.best_epoch}.pth")
+                torch.save(self.best_model_state, checkpoint_best_path)
+                
             # 重置早停计数器
             self.early_stopping_counter = 0
         else:
@@ -372,53 +398,50 @@ class Trainer(object):
     def save_result(self):
         # 确保输出目录存在
         os.makedirs(self.output_dir, exist_ok=True)
-        
-        # 使用时间戳创建唯一的结果目录
+
+        # 使用时间戳创建唯一标识
         import time
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        result_dir = os.path.join(self.output_dir, f"final_result_{timestamp}")
-        os.makedirs(result_dir, exist_ok=True)
-        
-        if self.config["RESULT"]["SAVE_MODEL"]:
-            # 保存最佳模型
-            best_model_path = os.path.join(result_dir, f"best_model_epoch_{self.best_epoch}.pth")
-            torch.save(self.best_model_state, best_model_path)
-            
-            # 保存最终模型
-            final_model_path = os.path.join(result_dir, f"final_model_epoch_{self.current_epoch}.pth") 
-            torch.save(self.model.state_dict(), final_model_path)
-            
-        # 保存训练指标
-        state = {
-            "train_epoch_loss": self.train_loss_epoch,
-            "val_epoch_loss": self.val_loss_epoch,
-            "test_metrics": self.test_metrics,
-            "config": self.config
-        }
-        if self.is_da:
-            state["train_model_loss"] = self.train_model_loss_epoch
-            state["train_da_loss"] = self.train_da_loss_epoch
-            state["da_init_epoch"] = self.da_init_epoch
-        
-        # 保存训练指标到文件
-        metrics_path = os.path.join(result_dir, f"result_metrics.pt")
-        torch.save(state, metrics_path)
 
-        # 保存简单的测试结果摘要
-        test_summary_file = os.path.join(result_dir, "test_summary.csv") 
-        with open(test_summary_file, 'w') as fp:
-            # 写入表头
-            header = "best_epoch,auroc,auprc,f1,sensitivity,specificity,accuracy"
-            fp.write(header + "\n")
-            
-            # 写入测试结果
-            line = f"{self.best_epoch},{self.test_metrics['auroc']:.6f},{self.test_metrics['auprc']:.6f}"
-            line += f",{self.test_metrics['F1']:.6f},{self.test_metrics['sensitivity']:.6f}"
-            line += f",{self.test_metrics['specificity']:.6f},{self.test_metrics['accuracy']:.6f}"
-            fp.write(line + "\n")
-            
-        print(f"测试结果已保存到: {test_summary_file}")
-        print(f"所有结果已保存到目录: {result_dir}")
+        if self.config["RESULT"]["SAVE_MODEL"]:
+            # 确保最佳模型状态已定义
+            if not hasattr(self, 'best_model_state') or self.best_model_state is None:
+                self.best_model_state = self.model.state_dict()
+
+            # 只保存一个最佳模型文件到主目录
+            best_model_path = os.path.join(self.output_dir, "best_model.pth")
+            torch.save(self.best_model_state, best_model_path)
+
+        # 保存配置文件备份
+        config_path = os.path.join(self.output_dir, "config.yaml")
+        import yaml
+        with open(config_path, 'w') as f:
+            yaml.dump(dict(self.config), f, default_flow_style=False)
+
+        # 创建简洁的结果摘要文件
+        results_file = os.path.join(self.output_dir, "results.txt")
+        best_epoch = self.best_epoch if hasattr(self, 'best_epoch') else 0
+        with open(results_file, 'w') as f:
+            f.write(f"训练完成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"最佳轮次: {best_epoch}\n")
+            f.write(f"AUROC: {self.test_metrics['auroc']:.4f}\n")
+            f.write(f"AUPRC: {self.test_metrics['auprc']:.4f}\n")
+            f.write(f"F1分数: {self.test_metrics['F1']:.4f}\n")
+            f.write(f"敏感度: {self.test_metrics['sensitivity']:.4f}\n")
+            f.write(f"特异度: {self.test_metrics['specificity']:.4f}\n")
+            f.write(f"准确率: {self.test_metrics['accuracy']:.4f}\n")
+            f.write(f"精确度: {self.test_metrics['Precision']:.4f}\n")
+
+        # 保存详细的训练日志（如果需要调试）
+        if hasattr(self, 'save_detailed_logs') and self.save_detailed_logs:
+            train_log_path = os.path.join(self.output_dir, "train.log")
+            state = {
+                "train_epoch_loss": self.train_loss_epoch,
+                "val_epoch_loss": self.val_loss_epoch,
+                "test_metrics": self.test_metrics,
+                "best_epoch": best_epoch,
+            }
+            torch.save(state, train_log_path)
 
     def _compute_entropy_weights(self, logits):
         entropy = entropy_logits(logits)
@@ -629,18 +652,66 @@ class Trainer(object):
             data_loader = self.test_dataloader
             # 使用最佳模型的权重
             prev_state = copy.deepcopy(self.model.state_dict())
-            self.model.load_state_dict(self.best_model_state)
+            
+            # 检查测试数据加载器是否正确初始化
+            if data_loader is None:
+                print("错误: 测试数据加载器未初始化!")
+                return 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, float('inf'), 0.5, 0.0
+                
+            # 检查测试数据加载器长度
+            print(f"测试数据集大小: {len(data_loader)} 批次")
+            
+            # 增加检查最佳模型状态是否存在
+            if self.best_model_state is None:
+                print("警告: 没有保存的最佳模型状态。尝试从磁盘加载最佳模型文件。")
+                best_model_path = os.path.join(self.output_dir, "best_model.pth")
+                if os.path.exists(best_model_path):
+                    try:
+                        self.best_model_state = torch.load(best_model_path, map_location=self.device)
+                        if isinstance(self.best_model_state, dict) and 'state_dict' in self.best_model_state:
+                            self.best_model_state = self.best_model_state['state_dict']
+                        print(f"从磁盘成功加载最佳模型: {best_model_path}")
+                    except Exception as e:
+                        print(f"加载最佳模型失败: {str(e)}")
+                        print("将使用当前模型进行测试")
+                        self.best_model_state = self.model.state_dict()
+                else:
+                    print(f"警告: 找不到最佳模型文件 {best_model_path}")
+                    print("将使用当前模型进行测试")
+                    self.best_model_state = self.model.state_dict()
+            
+            # 加载最佳模型状态
+            try:
+                self.model.load_state_dict(self.best_model_state)
+                print(f"成功加载最佳模型状态（来自Epoch {self.best_epoch if hasattr(self, 'best_epoch') else 'unknown'}）")
+            except Exception as e:
+                print(f"加载最佳模型状态失败: {str(e)}")
+                print("将使用当前模型进行测试")
+                # 保持当前模型状态
         elif dataloader == "val":
             data_loader = self.val_dataloader
+            print(f"验证数据集大小: {len(data_loader)} 批次")
         else:
             raise ValueError(f"Error key value {dataloader}")
         
         num_batches = 0
+        processed_samples = 0
+        error_batches = 0
+        
         with torch.no_grad():
             self.model.eval()
+            # 添加进度条
+            print(f"开始进行{dataloader}评估...")
             for i, batch in enumerate(data_loader):
                 # 检查批处理数据是否为None
-                if batch is None or (isinstance(batch, tuple) and None in batch):
+                if batch is None:
+                    print(f"警告: 批次 {i} 为空，跳过")
+                    error_batches += 1
+                    continue
+                
+                if isinstance(batch, tuple) and None in batch:
+                    print(f"警告: 批次 {i} 包含None值，跳过。批次结构: {[type(x) if x is not None else None for x in batch]}")
+                    error_batches += 1
                     continue
                 
                 try:
@@ -649,10 +720,18 @@ class Trainer(object):
                         v_d, v_p, labels = batch
                         v_d, v_p, labels = v_d.to(self.device), v_p.to(self.device), labels.float().to(self.device)
                         v_d, v_p, f, score = self.model(v_d, v_p)
+                        batch_size = labels.shape[0]
                     elif len(batch) == 2:  # DrugBAN3D的数据格式: (bg, labels)
                         bg, labels = batch
                         if bg is None or labels is None:
+                            print(f"警告: 批次 {i} 的图或标签为None，跳过")
+                            error_batches += 1
                             continue
+                        
+                        batch_size = labels.shape[0]
+                        # 简化的批次信息输出（仅在详细模式下）
+                        if self.verbose and (i < 3 or i % 50 == 0):  # 减少输出频率
+                            print(f"处理批次 {i}/{len(dataloader)}, 样本数: {batch_size}")
                         
                         bg, labels = bg.to(self.device), labels.float().to(self.device)
                         v_d, v_p, f, score = self.model(bg)
@@ -660,6 +739,8 @@ class Trainer(object):
                         # 调整预测值形状，确保与标签形状匹配
                         score = score.squeeze()
                     else:
+                        print(f"警告: 批次 {i} 的元素数量 ({len(batch)}) 不符合预期，跳过")
+                        error_batches += 1
                         continue
                     
                     if self.n_class == 1:
@@ -667,18 +748,38 @@ class Trainer(object):
                     else:
                         n, loss = cross_entropy_logits(score, labels)
                     test_loss += loss.item()
-                    y_label = y_label + labels.to("cpu").tolist()
-                    y_pred = y_pred + n.to("cpu").tolist()
-                    num_batches += 1
-                except Exception as e:
-                    continue
                     
+                    # 添加详细的批次预测信息
+                    batch_labels = labels.to("cpu").tolist()
+                    batch_preds = n.to("cpu").tolist()
+                    y_label.extend(batch_labels)
+                    y_pred.extend(batch_preds)
+                    
+                    processed_samples += batch_size
+                    num_batches += 1
+                    
+                    # 打印批次处理进度
+                    if i < 5 or i % 100 == 0:
+                        print(f"处理批次 {i}/{len(data_loader)}, 累计样本数: {processed_samples}, 批次损失: {loss.item():.4f}")
+                        
+                except Exception as e:
+                    print(f"处理批次 {i} 时出错: {str(e)}")
+                    traceback.print_exc()  # 打印完整的错误堆栈
+                    error_batches += 1
+                    continue
+        
+        # 打印处理统计信息
+        print(f"测试完成: 处理了 {num_batches}/{len(data_loader)} 批次, {processed_samples} 个样本")
+        print(f"错误批次数: {error_batches}")
+        print(f"预测标签统计: 正样本数={sum([1 for x in y_label if x > 0.5])}, 负样本数={sum([1 for x in y_label if x <= 0.5])}")
+        
         # 如果是测试集，恢复原来的模型权重
         if dataloader == "test":
             self.model.load_state_dict(prev_state)
             
         # 防止没有成功处理任何批次的情况
         if len(y_label) == 0 or len(y_pred) == 0:
+            print("警告: 没有成功处理任何样本，无法计算评估指标!")
             if dataloader == "test":
                 return 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, float('inf'), 0.5, 0.0
             else:
@@ -688,28 +789,55 @@ class Trainer(object):
         try:
             auroc = roc_auc_score(y_label, y_pred)
             auprc = average_precision_score(y_label, y_pred)
+            print(f"成功计算评估指标: AUROC={auroc:.4f}, AUPRC={auprc:.4f}")
         except Exception as e:
+            print(f"计算评估指标时出错: {str(e)}")
             auroc, auprc = 0.5, 0.5
             
         # 防止除零错误
         test_loss = test_loss / max(1, num_batches)
 
         if dataloader == "test":
-            fpr, tpr, thresholds = roc_curve(y_label, y_pred)
-            prec, recall, _ = precision_recall_curve(y_label, y_pred)
-            precision = tpr / (tpr + fpr + 1e-10)  # 添加小的epsilon防止除零
-            f1 = 2 * precision * tpr / (tpr + precision + 1e-10)
-            thred_optim = thresholds[5:][np.argmax(f1[5:])]
-            y_pred_s = [1 if i else 0 for i in (y_pred >= thred_optim)]
-            cm1 = confusion_matrix(y_label, y_pred_s)
-            accuracy = (cm1[0, 0] + cm1[1, 1]) / sum(sum(cm1))
-            sensitivity = cm1[0, 0] / (cm1[0, 0] + cm1[0, 1] + 1e-10)
-            specificity = cm1[1, 1] / (cm1[1, 0] + cm1[1, 1] + 1e-10)
-            if self.experiment:
-                self.experiment.log_curve("test_roc curve", fpr, tpr)
-                self.experiment.log_curve("test_pr curve", recall, prec)
-            precision1 = precision_score(y_label, y_pred_s)
-            return auroc, auprc, np.max(f1[5:]), sensitivity, specificity, accuracy, test_loss, thred_optim, precision1
+            try:
+                fpr, tpr, thresholds = roc_curve(y_label, y_pred)
+                prec, recall, _ = precision_recall_curve(y_label, y_pred)
+                precision = tpr / (tpr + fpr + 1e-10)  # 添加小的epsilon防止除零
+                f1 = 2 * precision * tpr / (tpr + precision + 1e-10)
+                
+                # 确保f1数组不为空
+                if len(f1) <= 5:
+                    print("警告: F1分数数组过短，使用默认阈值0.5")
+                    thred_optim = 0.5
+                    max_f1 = 0.0
+                else:
+                    max_f1 = np.max(f1[5:])
+                    thred_optim = thresholds[5:][np.argmax(f1[5:])]
+                
+                print(f"最佳阈值: {thred_optim:.4f}, 对应的F1分数: {max_f1:.4f}")
+                
+                y_pred_s = [1 if i >= thred_optim else 0 for i in y_pred]
+                cm1 = confusion_matrix(y_label, y_pred_s)
+                print(f"混淆矩阵:\n{cm1}")
+                
+                accuracy = (cm1[0, 0] + cm1[1, 1]) / sum(sum(cm1))
+                sensitivity = cm1[0, 0] / (cm1[0, 0] + cm1[0, 1] + 1e-10)
+                specificity = cm1[1, 1] / (cm1[1, 0] + cm1[1, 1] + 1e-10)
+                
+                if self.experiment:
+                    self.experiment.log_curve("test_roc curve", fpr, tpr)
+                    self.experiment.log_curve("test_pr curve", recall, prec)
+                
+                precision1 = precision_score(y_label, y_pred_s)
+                
+                print(f"详细测试结果: AUROC={auroc:.4f}, AUPRC={auprc:.4f}, F1={max_f1:.4f}, "
+                      f"敏感度={sensitivity:.4f}, 特异度={specificity:.4f}, 准确率={accuracy:.4f}, "
+                      f"精确度={precision1:.4f}")
+                
+                return auroc, auprc, max_f1, sensitivity, specificity, accuracy, test_loss, thred_optim, precision1
+            except Exception as e:
+                print(f"计算详细测试指标时出错: {str(e)}")
+                traceback.print_exc()
+                return 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, test_loss, 0.5, 0.0
         else:
             return auroc, auprc, test_loss
 

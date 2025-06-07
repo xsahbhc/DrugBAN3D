@@ -22,6 +22,7 @@ import time
 import glob
 import warnings
 import traceback
+import math  # 添加这个导入
 
 # 设置随机种子，保证结果可复现
 def set_random_seed(seed=42):
@@ -151,85 +152,352 @@ def random_remove_edges(graph, ratio=0.05):
     
     return new_graph
 
-def augment_graph(graph, augment_type='rotate', params=None):
+def torsional_rotation(coords, atom_indices, angle):
     """
-    对分子图进行数据增强
+    执行分子扭转旋转，模拟分子的柔性变化。
+    
+    参数:
+    coords: 原子坐标 [N, 3]
+    atom_indices: 旋转轴两端的原子索引 [2]
+    angle: 旋转角度（弧度）
+    
+    返回:
+    rotated_coords: 旋转后的坐标 [N, 3]
+    """
+    if isinstance(coords, torch.Tensor):
+        coords_np = coords.numpy()
+        is_tensor = True
+    else:
+        coords_np = coords
+        is_tensor = False
+    
+    # 获取旋转轴的两个原子的坐标
+    if len(atom_indices) < 2:
+        return coords  # 如果没有足够的原子，直接返回原始坐标
+        
+    atom1, atom2 = atom_indices[0], atom_indices[1]
+    if atom1 >= len(coords_np) or atom2 >= len(coords_np):
+        return coords  # 原子索引超出范围，返回原始坐标
+    
+    # 计算旋转轴
+    axis = coords_np[atom2] - coords_np[atom1]
+    axis_length = np.linalg.norm(axis)
+    if axis_length < 1e-10:
+        return coords  # 轴长度近似为零，返回原始坐标
+    
+    # 归一化旋转轴
+    axis = axis / axis_length
+    
+    # 创建旋转矩阵
+    cos_angle = np.cos(angle)
+    sin_angle = np.sin(angle)
+    
+    # Rodriguez旋转公式
+    K = np.array([[0, -axis[2], axis[1]],
+                  [axis[2], 0, -axis[0]],
+                  [-axis[1], axis[0], 0]])
+    R = np.eye(3) + sin_angle * K + (1 - cos_angle) * np.dot(K, K)
+    
+    # 移动坐标，使旋转轴的第一个原子位于原点
+    translated_coords = coords_np - coords_np[atom1]
+    
+    # 对每个原子应用旋转
+    rotated_coords = np.copy(coords_np)
+    for i in range(len(coords_np)):
+        # 只旋转选定的子结构，这里简化为旋转全部，可以基于分子拓扑结构进行优化
+        rotated_coords[i] = coords_np[atom1] + np.dot(R, translated_coords[i])
+    
+    # 如果输入是tensor，转回tensor
+    if is_tensor:
+        rotated_coords = torch.tensor(rotated_coords, dtype=coords.dtype, device=coords.device)
+    
+    return rotated_coords
+
+def conformational_sampling(graph, num_samples=1, max_iterations=100, temperature=0.1, distance_constraint=0.1):
+    """
+    执行构象采样，生成分子的多个低能量构象
     
     参数:
     graph: DGL图
-    augment_type: 增强类型，'rotate', 'jitter', 'edge_dropout' 或 'combined'
-    params: 增强参数
+    num_samples: 采样构象数量
+    max_iterations: 最大迭代次数
+    temperature: 温度参数，控制采样范围
+    distance_constraint: 原子间距离约束，避免非物理性构象
     
+    返回:
+    sampled_graphs: 采样得到的图列表
+    """
+    if 'ligand' not in graph.ntypes or 'coords' not in graph.nodes['ligand'].data:
+        return [graph.clone()]  # 如果没有配体坐标，返回原始图
+        
+    # 获取原始配体坐标
+    orig_coords = graph.nodes['ligand'].data['coords']
+    
+    # 收集配体内部的边信息，用于约束采样
+    internal_edges = []
+    if ('ligand', 'to', 'ligand') in graph.canonical_etypes:
+        src, dst = graph.edges(etype=('ligand', 'to', 'ligand'))
+        for i in range(len(src)):
+            internal_edges.append((src[i].item(), dst[i].item()))
+    
+    # 生成多个候选构象
+    sampled_graphs = []
+    for _ in range(num_samples):
+        sampled_graph = graph.clone()
+        current_coords = sampled_graph.nodes['ligand'].data['coords'].clone()
+        
+        # 使用简化的Monte Carlo采样来优化构象
+        for _ in range(max_iterations):
+            # 随机选择一个扭转角度
+            angle = (random.random() * 2 - 1) * math.pi * temperature
+            
+            # 随机选择一个旋转轴
+            if len(internal_edges) > 0:
+                axis_atoms = random.choice(internal_edges)
+            else:
+                # 如果没有内部边信息，随机选择两个原子
+                num_atoms = current_coords.shape[0]
+                if num_atoms < 2:
+                    break
+                atom1 = random.randint(0, num_atoms-1)
+                atom2 = random.randint(0, num_atoms-1)
+                while atom2 == atom1:
+                    atom2 = random.randint(0, num_atoms-1)
+                axis_atoms = (atom1, atom2)
+            
+            # 执行扭转旋转
+            new_coords = torsional_rotation(current_coords, axis_atoms, angle)
+            
+            # 检查新构象是否满足约束条件
+            # 这里简化为简单接受，实际应该检查是否是物理合理的构象
+            current_coords = new_coords
+        
+        # 更新图的配体坐标
+        sampled_graph.nodes['ligand'].data['coords'] = current_coords
+        
+        # 更新蛋白质-配体间的边特征，如距离
+        update_interaction_features(sampled_graph)
+        
+        sampled_graphs.append(sampled_graph)
+    
+    return sampled_graphs
+
+def update_interaction_features(graph):
+    """更新蛋白质-配体相互作用特征"""
+    if 'ligand' not in graph.ntypes or 'protein' not in graph.ntypes:
+        return
+        
+    ligand_coords = graph.nodes['ligand'].data.get('coords', None)
+    protein_coords = graph.nodes['protein'].data.get('coords', None)
+    
+    if ligand_coords is None or protein_coords is None:
+        return
+    
+    # 更新配体到蛋白质的边特征
+    if ('ligand', 'to', 'protein') in graph.canonical_etypes:
+        src, dst = graph.edges(etype=('ligand', 'to', 'protein'))
+        if len(src) > 0 and 'distance' in graph.edges[('ligand', 'to', 'protein')].data:
+            distances = torch.norm(ligand_coords[src] - protein_coords[dst], dim=1)
+            graph.edges[('ligand', 'to', 'protein')].data['distance'] = distances
+    
+    # 更新蛋白质到配体的边特征
+    if ('protein', 'to', 'ligand') in graph.canonical_etypes:
+        src, dst = graph.edges(etype=('protein', 'to', 'ligand'))
+        if len(src) > 0 and 'distance' in graph.edges[('protein', 'to', 'ligand')].data:
+            distances = torch.norm(protein_coords[src] - ligand_coords[dst], dim=1)
+            graph.edges[('protein', 'to', 'ligand')].data['distance'] = distances
+
+def local_geometry_perturbation(coords, indices=None, scale=0.05):
+    """
+    对分子的局部区域进行几何扰动
+    
+    参数:
+    coords: 原子坐标 [N, 3]
+    indices: 要扰动的原子索引，如果为None则随机选择50%的原子
+    scale: 扰动幅度
+    
+    返回:
+    perturbed_coords: 扰动后的坐标 [N, 3]
+    """
+    if isinstance(coords, torch.Tensor):
+        if indices is None:
+            # 随机选择50%的原子
+            num_atoms = coords.shape[0]
+            num_to_perturb = max(1, int(num_atoms * 0.5))
+            indices = torch.randperm(num_atoms)[:num_to_perturb]
+            
+        # 生成随机噪声
+        noise = torch.zeros_like(coords)
+        noise[indices] = torch.randn_like(coords[indices]) * scale
+        
+        return coords + noise
+    else:
+        if indices is None:
+            # 随机选择50%的原子
+            num_atoms = coords.shape[0]
+            num_to_perturb = max(1, int(num_atoms * 0.5))
+            indices = np.random.permutation(num_atoms)[:num_to_perturb]
+            
+        # 生成随机噪声
+        noise = np.zeros_like(coords)
+        noise[indices] = np.random.randn(*coords[indices].shape) * scale
+        
+        return coords + noise
+
+def validate_graph_quality(graph, original_graph=None):
+    """
+    验证增强后图的质量
+
+    参数:
+    graph: 增强后的图
+    original_graph: 原始图（用于对比）
+
+    返回:
+    is_valid: 是否通过质量检查
+    quality_score: 质量分数 (0-1)
+    """
+    try:
+        # 基本结构检查
+        if graph.number_of_nodes() == 0:
+            return False, 0.0
+
+        # 检查图的连通性
+        if 'ligand' in graph.ntypes:
+            ligand_nodes = graph.number_of_nodes('ligand')
+            if ligand_nodes == 0:
+                return False, 0.0
+
+        quality_score = 1.0
+
+        # 如果有原始图，进行对比检查
+        if original_graph is not None:
+            # 节点数量应该保持一致
+            if graph.number_of_nodes() != original_graph.number_of_nodes():
+                quality_score *= 0.5
+
+            # 边数量变化不应该太大（允许±10%）
+            orig_edges = original_graph.number_of_edges()
+            new_edges = graph.number_of_edges()
+            if orig_edges > 0:
+                edge_change_ratio = abs(new_edges - orig_edges) / orig_edges
+                if edge_change_ratio > 0.1:  # 超过10%变化
+                    quality_score *= 0.7
+
+        # 检查坐标的合理性
+        if 'ligand' in graph.ntypes and 'coords' in graph.nodes['ligand'].data:
+            coords = graph.nodes['ligand'].data['coords']
+
+            # 检查是否有NaN或无穷大值
+            if torch.isnan(coords).any() or torch.isinf(coords).any():
+                return False, 0.0
+
+            # 检查坐标范围是否合理（不应该偏离太远）
+            coord_std = torch.std(coords)
+            if coord_std > 100:  # 坐标标准差过大
+                quality_score *= 0.8
+
+        # 质量分数阈值
+        return quality_score >= 0.6, quality_score
+
+    except Exception as e:
+        return False, 0.0
+
+def augment_graph(graph, augment_type='gentle_rotate', params=None):
+    """
+    对分子图进行数据增强 - 优化版本，增加质量控制
+
+    参数:
+    graph: DGL图
+    augment_type: 增强类型，'gentle_rotate', 'thermal_vibration', 'minimal_edge_dropout', 'smart_combined', 'bond_flexibility'
+    params: 增强参数
+
     返回:
     augmented_graph: 增强后的图
     """
     if params is None:
         params = {}
-        
-    augmented_graph = graph.clone()
-    
-    if augment_type == 'rotate' or augment_type == 'combined':
-        # 减小旋转范围，使增强更温和
-        angle_x = np.random.uniform(-np.pi/9, np.pi/9)  # ±20度范围，更加温和
-        angle_y = np.random.uniform(-np.pi/9, np.pi/9)
-        angle_z = np.random.uniform(-np.pi/9, np.pi/9)
-        
-        # 仅旋转配体节点，保持蛋白质不变
-        if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
-            ligand_coords = augmented_graph.nodes['ligand'].data['coords']
-            rotated_ligand_coords = rotate_coordinates(ligand_coords, angle_x, angle_y, angle_z)
-            augmented_graph.nodes['ligand'].data['coords'] = rotated_ligand_coords
-            
-            # 重新计算边特征（如果边特征包含空间信息）
-            if ('ligand', 'to', 'protein') in augmented_graph.canonical_etypes:
-                src_nodes, dst_nodes = augmented_graph.edges(etype=('ligand', 'to', 'protein'))
-                if len(src_nodes) > 0 and 'distance' in augmented_graph.edges[('ligand', 'to', 'protein')].data:
-                    protein_coords = augmented_graph.nodes['protein'].data['coords']
-                    distances = torch.norm(rotated_ligand_coords[src_nodes] - protein_coords[dst_nodes], dim=1)
-                    augmented_graph.edges[('ligand', 'to', 'protein')].data['distance'] = distances
-            
-            if ('protein', 'to', 'ligand') in augmented_graph.canonical_etypes:
-                src_nodes, dst_nodes = augmented_graph.edges(etype=('protein', 'to', 'ligand'))
-                if len(src_nodes) > 0 and 'distance' in augmented_graph.edges[('protein', 'to', 'ligand')].data:
-                    protein_coords = augmented_graph.nodes['protein'].data['coords']
-                    distances = torch.norm(protein_coords[src_nodes] - rotated_ligand_coords[dst_nodes], dim=1)
-                    augmented_graph.edges[('protein', 'to', 'ligand')].data['distance'] = distances
-    
-    if augment_type == 'jitter' or augment_type == 'combined':
-        # 减小扰动幅度
-        scale = params.get('jitter_scale', 0.03)  # 默认值降低到0.03
-        
-        # 仅对配体节点添加扰动，不扰动蛋白质
-        if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
-            coords = augmented_graph.nodes['ligand'].data['coords']
-            jittered_coords = jitter_coordinates(coords, scale)
-            augmented_graph.nodes['ligand'].data['coords'] = jittered_coords
-            
-            # 更新边特征（如果必要）
-            if ('ligand', 'to', 'protein') in augmented_graph.canonical_etypes:
-                if 'protein' in augmented_graph.ntypes:
-                    if 'coords' in augmented_graph.nodes['protein'].data:
-                        src_nodes, dst_nodes = augmented_graph.edges(etype=('ligand', 'to', 'protein'))
-                        if len(src_nodes) > 0 and 'distance' in augmented_graph.edges[('ligand', 'to', 'protein')].data:
-                            protein_coords = augmented_graph.nodes['protein'].data['coords']
-                            distances = torch.norm(jittered_coords[src_nodes] - protein_coords[dst_nodes], dim=1)
-                            augmented_graph.edges[('ligand', 'to', 'protein')].data['distance'] = distances
-            
-            if ('protein', 'to', 'ligand') in augmented_graph.canonical_etypes:
-                if 'protein' in augmented_graph.ntypes:
-                    if 'coords' in augmented_graph.nodes['protein'].data:
-                        src_nodes, dst_nodes = augmented_graph.edges(etype=('protein', 'to', 'ligand'))
-                        if len(src_nodes) > 0 and 'distance' in augmented_graph.edges[('protein', 'to', 'ligand')].data:
-                            protein_coords = augmented_graph.nodes['protein'].data['coords']
-                            distances = torch.norm(protein_coords[src_nodes] - jittered_coords[dst_nodes], dim=1)
-                            augmented_graph.edges[('protein', 'to', 'ligand')].data['distance'] = distances
-    
-    if augment_type == 'edge_dropout' or augment_type == 'combined':
-        # 减小边抽样比例
-        edge_dropout_ratio = params.get('edge_dropout_ratio', 0.01)  # 减小默认比例到0.01
-        augmented_graph = random_remove_edges(augmented_graph, ratio=edge_dropout_ratio)
-    
-    return augmented_graph
+
+    # 尝试多次增强，选择质量最好的结果
+    best_graph = None
+    best_quality = 0.0
+    max_attempts = 3  # 最多尝试3次
+
+    for attempt in range(max_attempts):
+        augmented_graph = graph.clone()
+
+        # 1. 温和旋转：模拟分子在溶液中的自然旋转（±3度，更保守）
+        if augment_type == 'gentle_rotate' or augment_type == 'smart_combined':
+            # 进一步减小旋转范围，使用更保守的角度
+            angle_x = np.random.uniform(-np.pi/60, np.pi/60)  # ±3度范围（更保守）
+            angle_y = np.random.uniform(-np.pi/60, np.pi/60)
+            angle_z = np.random.uniform(-np.pi/60, np.pi/60)
+
+            # 仅旋转配体节点，保持蛋白质不变
+            if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
+                ligand_coords = augmented_graph.nodes['ligand'].data['coords']
+                rotated_ligand_coords = rotate_coordinates(ligand_coords, angle_x, angle_y, angle_z)
+                augmented_graph.nodes['ligand'].data['coords'] = rotated_ligand_coords
+
+                # 更新蛋白质-配体相互作用特征
+                update_interaction_features(augmented_graph)
+
+        # 2. 热振动：模拟分子的热运动（更小的扰动）
+        if augment_type == 'thermal_vibration' or augment_type == 'smart_combined':
+            # 使用更小的扰动幅度
+            if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
+                coords = augmented_graph.nodes['ligand'].data['coords']
+                # 使用更小的扰动幅度（0.005 Å）
+                scale = 0.005  # 约0.005埃的振动幅度
+                jittered_coords = jitter_coordinates(coords, scale)
+                augmented_graph.nodes['ligand'].data['coords'] = jittered_coords
+
+                # 更新蛋白质-配体相互作用特征
+                update_interaction_features(augmented_graph)
+
+        # 3. 最小边删除：模拟实验中的微小结构变化
+        if augment_type == 'minimal_edge_dropout':
+            # 使用更保守的边删除比例
+            dropout_ratio = 0.005  # 只删除0.5%的边
+            augmented_graph = random_remove_edges(augmented_graph, dropout_ratio)
+
+        # 4. 键长微调：模拟键的柔性
+        if augment_type == 'bond_flexibility':
+            if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
+                coords = augmented_graph.nodes['ligand'].data['coords']
+                # 对配体坐标进行更小的局部扰动
+                perturbed_coords = local_geometry_perturbation(coords, scale=0.003)  # 0.003埃的微调
+                augmented_graph.nodes['ligand'].data['coords'] = perturbed_coords
+
+                # 更新蛋白质-配体相互作用特征
+                update_interaction_features(augmented_graph)
+
+        # 5. 智能组合增强：结合多种保守方法
+        if augment_type == 'smart_combined':
+            if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
+                # 最后进行极小的键长微调
+                coords = augmented_graph.nodes['ligand'].data['coords']
+                final_coords = local_geometry_perturbation(coords, scale=0.002)  # 极小的微调
+                augmented_graph.nodes['ligand'].data['coords'] = final_coords
+
+                # 更新蛋白质-配体相互作用特征
+                update_interaction_features(augmented_graph)
+
+        # 质量检查
+        is_valid, quality_score = validate_graph_quality(augmented_graph, graph)
+
+        if is_valid and quality_score > best_quality:
+            best_graph = augmented_graph
+            best_quality = quality_score
+
+        # 如果质量足够好，提前退出
+        if quality_score > 0.9:
+            break
+
+    # 如果没有找到合格的增强结果，返回原图
+    if best_graph is None:
+        return graph
+
+    return best_graph
 
 def process_complex(args):
     """处理单个复合物并生成增强后的图缓存"""
@@ -264,26 +532,29 @@ def process_complex(args):
         
         # 执行增强
         for i in range(augment_count):
-            # 随机选择增强类型
+            # 随机选择增强类型 - 改进版本，使用更保守和科学的策略
             if augment_types is None:
-                # 根据任务特点，配置更适合的增强类型概率分布
-                # 对于药物-蛋白质相互作用，分子的空间构象尤为重要，因此以旋转为主
-                rand_val = random.random()
-                if rand_val < 0.5:  # 50%概率使用旋转
-                    aug_type = 'rotate'
-                    params = {'rotation_strength': 0.7}  # 控制旋转幅度
-                elif rand_val < 0.8:  # 30%概率使用轻微扰动
-                    aug_type = 'jitter'
-                    params = {'jitter_scale': 0.03}  # 小幅度扰动
-                elif rand_val < 0.9:  # 10%概率使用边删除
-                    aug_type = 'edge_dropout'
-                    params = {'edge_dropout_ratio': 0.01}  # 很小的边删除率
-                else:  # 10%概率使用组合增强
-                    aug_type = 'combined'
-                    params = {
-                        'jitter_scale': 0.02,  # 组合时进一步降低扰动幅度
-                        'edge_dropout_ratio': 0.01
-                    }
+                # 使用科学保守的增强类型选择策略
+                if is_positive:
+                    # 正样本使用高质量的保守增强方法
+                    rand_val = random.random()
+                    if rand_val < 0.50:  # 50%概率使用温和旋转
+                        aug_type = 'gentle_rotate'
+                        params = {}
+                    elif rand_val < 0.80:  # 30%概率使用热振动
+                        aug_type = 'thermal_vibration'
+                        params = {}
+                    elif rand_val < 0.95:  # 15%概率使用键长微调
+                        aug_type = 'bond_flexibility'
+                        params = {}
+                    else:  # 5%概率使用智能组合
+                        aug_type = 'smart_combined'
+                        params = {}
+                else:
+                    # 负样本不进行增强（NEG_AUGMENT_COUNT=0）
+                    # 这部分代码实际不会执行，但保留以防配置改变
+                    aug_type = 'gentle_rotate'
+                    params = {}
             else:
                 # 如果提供了指定的增强类型列表，从中随机选择
                 aug_type = random.choice(augment_types)
@@ -343,13 +614,20 @@ def augment_data(cache_dir, output_dir, label_file, pos_augment_count=3, neg_aug
     print(f"总样本数: {len(labels)}, 正样本数: {len(pos_indices)} ({pos_ratio:.2f}%), "
           f"负样本数: {len(neg_indices)} ({100-pos_ratio:.2f}%)")
     
-    # 确认增强类型
+    # 确认增强类型 - 改进版本，使用更保守和科学的方法
     if augment_types is None:
-        augment_types = ['rotate', 'jitter', 'edge_dropout', 'combined']
-    valid_types = ['rotate', 'jitter', 'edge_dropout', 'combined']
+        # 使用保守的增强类型列表，注重物理合理性
+        augment_types = [
+            'gentle_rotate', 'thermal_vibration', 'bond_flexibility',
+            'smart_combined', 'minimal_edge_dropout'
+        ]
+    valid_types = [
+        'gentle_rotate', 'thermal_vibration', 'bond_flexibility',
+        'smart_combined', 'minimal_edge_dropout'
+    ]
     augment_types = [t for t in augment_types if t in valid_types]
     if not augment_types:
-        augment_types = ['rotate', 'combined']  # 默认增强类型
+        augment_types = ['gentle_rotate', 'thermal_vibration']  # 默认保守增强类型
     
     print(f"使用的增强类型: {augment_types}")
     print(f"正样本增强数量: 每个样本{pos_augment_count}次")

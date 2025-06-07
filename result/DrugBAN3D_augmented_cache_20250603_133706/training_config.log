@@ -1,9 +1,0 @@
-训练开始时间: 2025-06-03 13:37:06
-模型: DrugBAN3D
-CUDA可用: True
-GPU: NVIDIA GeForce RTX 4090
-配置文件: configs/augconfig/DrugBAN3D_cached_augmented_20250603_133704.yaml
-输出目录: result/DrugBAN3D_augmented_cache_20250603_133706
-总训练轮数: 100
-批次大小: 32
-学习率: 0.00018
