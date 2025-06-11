@@ -1,0 +1,232 @@
+ADAPT: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    ENTROPY_LAMBDA: 1.0
+    LAMBDA: 0.1
+    METHOD: null
+    RANDOM_DIM: 512
+    USE_TARGET: false
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+BCN: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    HEADS: 8
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+COMET: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    PROJECT: DrugBAN3D
+    TAG: time_stamped_run
+    USE: false
+    WORKSPACE: xsahbhc
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+CONTRASTIVE_LOSS_WEIGHT: 0.5
+DA: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    INIT_EPOCH: 0
+    LAMB_DA: 0.1
+    METHOD: null
+    ORIGINAL_RANDOM: false
+    RANDOM_LAYER: false
+    USE: false
+    USE_ENTROPY: false
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+DATA: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    TEST_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv
+    TRAIN_FILE: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/data/augmented/labels/20250609_211553/train_augmented.csv
+    VAL_FILE: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/data/augmented/labels/20250609_211553/valid_augmented.csv
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+DATA_3D: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    DIS_THRESHOLD: 5.0
+    LABEL_FILE: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/data/augmented/labels/20250609_211553/train_augmented.csv
+    NUM_WORKERS: 16
+    ROOT_DIR: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_pdb
+    TEST_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv
+    TRAIN_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv
+    VAL_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+DEBUG_MODE: false
+DECODER: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    BINARY: 1
+    DROPOUT: 0.3
+    HIDDEN_DIM: 512
+    IN_DIM: 384
+    OUT_DIM: 128
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+DRUG: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    ATOM_MAX: 50
+    HIDDEN_LAYERS:
+    - 128
+    - 256
+    - 256
+    NODE_IN_EMBEDDING: 128
+    NODE_IN_FEATS: 35
+    PADDING: true
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+EARLY_STOPPING_PATIENCE: 15
+EDGE_FEATS: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    inter_l2p: 11
+    inter_p2l: 11
+    intra_l: 17
+    intra_p: 17
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+FEATURE_REGULARIZATION_WEIGHT: 0.01
+FOCAL_LOSS_ALPHA: 0.3
+FOCAL_LOSS_GAMMA: 1.0
+GNN: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    HIDDEN_DIM: 384
+    NUM_LAYERS: 4
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+MODEL_TYPE: DrugBAN3D
+PATH: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    CACHE_DIR: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/data/augmented/graphs/20250609_211553
+    DATA_DIR: datasets
+    RESULT_DIR: result
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+PROTEIN: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    EMBEDDING_DIM: 64
+    KERNEL_SIZE:
+    - 4
+    - 8
+    - 12
+    NODE_IN_FEATS: 35
+    NUM_FILTERS:
+    - 32
+    - 64
+    - 96
+    PADDING: true
+    SEQ_MAX: 1000
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+RESULT: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    OUTPUT_DIR: result/DrugBAN3D_balanced_augment_20250609_211553
+    SAVE_BEST_ONLY: true
+    SAVE_EACH_EPOCH: false
+    SAVE_MODEL: true
+    SAVE_TEST_DETAILS: true
+    SAVE_TEST_PREDICTIONS: true
+    USE_STATE_DICT: true
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+SOLVER: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    BATCH_SIZE: 48
+    GRADIENT_CLIP_NORM: 1.0
+    LR_SCHEDULER: true
+    LR_SCHEDULER_TYPE: plateau
+    LR_WARMUP_EPOCHS: 4
+    MAX_EPOCH: 100
+    SEED: 42
+    USE_MIXED_PRECISION: false
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+SPATIAL_3D: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    CROSS_ATTENTION_HEADS: 8
+    DISTANCE_SCALES:
+    - 2.0
+    - 5.0
+    - 8.0
+    ENABLE_MULTISCALE: true
+    ENABLE_SPATIAL_FUSION: true
+    SPATIAL_DROPOUT: 0.1
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+TEST: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    BATCH_SIZE: 48
+    DEBUG_MODE: true
+    USE_ORIGINAL_TEST_DATA: true
+    VERBOSE: true
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+TRAIN: !!python/object/new:yacs.config.CfgNode
+  dictitems:
+    BATCH_SIZE: 48
+    D_LEARNING_RATE: 0.0004
+    D_STEPS_PER_G_STEP: 1
+    EPOCH: 100
+    GRADIENT_ACCUMULATE_STEPS: 2
+    GRADIENT_CLIP_NORM: 1.0
+    G_LEARNING_RATE: 0.0002
+    LABEL_SMOOTHING: 0.05
+    POS_WEIGHT: 1.05
+    RESUME_CHECKPOINT: ''
+    WEIGHT_DECAY: 0.0004
+  state:
+    __deprecated_keys__: !!set {}
+    __immutable__: false
+    __new_allowed__: false
+    __renamed_keys__: {}
+USE_BIAS_CORRECTION: true
+USE_CONTRASTIVE_LOSS: false
+USE_EARLY_STOPPING: true
+USE_FEATURE_REGULARIZATION: false
+USE_FOCAL_LOSS: true
+USE_ORIGINAL_TEST_DATA: true
+VERBOSE: true

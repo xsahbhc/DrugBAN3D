@@ -134,6 +134,14 @@ _C.EARLY_STOPPING_PATIENCE = 10  # 早停耐心值，从5增加到10
 # 偏置校正配置
 _C.USE_BIAS_CORRECTION = True  # 是否使用偏置校正模块
 
+# 3D空间特征融合配置
+_C.SPATIAL_3D = CN()
+_C.SPATIAL_3D.ENABLE_SPATIAL_FUSION = True      # 启用3D空间感知特征融合
+_C.SPATIAL_3D.ENABLE_MULTISCALE = True          # 启用多尺度特征提取
+_C.SPATIAL_3D.DISTANCE_SCALES = [2.0, 5.0, 8.0]  # 多尺度距离阈值(Å)
+_C.SPATIAL_3D.SPATIAL_DROPOUT = 0.1             # 空间模块Dropout率
+_C.SPATIAL_3D.CROSS_ATTENTION_HEADS = 8         # 交叉注意力头数
+
 # 对比损失配置
 _C.USE_CONTRASTIVE_LOSS = False  # 是否使用对比损失
 _C.CONTRASTIVE_LOSS_WEIGHT = 0.5  # 对比损失权重

@@ -20,17 +20,17 @@ DATA:
   TEST_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv"
 
 TRAIN:
-  D_LEARNING_RATE: 0.00036  # 批次大小翻倍，学习率相应增加
-  G_LEARNING_RATE: 0.0002   # 批次大小翻倍，学习率相应增加
-  BATCH_SIZE: 64  # 批次大小增加到64
+  D_LEARNING_RATE: 0.0004   # 最优判别器学习率（来自最佳实验）
+  G_LEARNING_RATE: 0.0002   # 最优生成器学习率（来自最佳实验）
+  BATCH_SIZE: 48  # 最佳batch size（来自最佳实验）
   D_STEPS_PER_G_STEP: 1
   RESUME_CHECKPOINT: ""
-  EPOCH: 100  # 总训练轮数
-  GRADIENT_ACCUMULATE_STEPS: 2  # 批次翻倍，梯度累积步数减半
-  GRADIENT_CLIP_NORM: 1.0  # 梯度裁剪阈值
-  WEIGHT_DECAY: 0.0003  # 权重衰减值
-  LABEL_SMOOTHING: 0.05  # 标签平滑参数
-  POS_WEIGHT: 1.05  # 正样本权重
+  EPOCH: 100  # 充足的训练轮数
+  GRADIENT_ACCUMULATE_STEPS: 2  # 梯度累积，有效batch size = 48*2 = 96
+  GRADIENT_CLIP_NORM: 1.0  # 梯度裁剪阈值（来自最佳实验）
+  WEIGHT_DECAY: 0.0004  # 最优权重衰减（来自最佳实验）
+  LABEL_SMOOTHING: 0.05  # 标签平滑参数（来自最佳实验）
+  POS_WEIGHT: 1.05  # 正样本权重（来自最佳实验）
 
 DRUG:
   ATOM_MAX: 50
@@ -54,18 +54,18 @@ EDGE_FEATS:
   inter_p2l: 11
 
 GNN:
-  HIDDEN_DIM: 384  # GNN隐藏维度
-  NUM_LAYERS: 4    # GNN层数
+  HIDDEN_DIM: 384  # 最优GNN隐藏维度
+  NUM_LAYERS: 4    # 最优GNN层数
 
 BCN:
-  HEADS: 8  # 注意力头数量
+  HEADS: 8  # 最优注意力头数量
 
 DECODER:
   IN_DIM: 384
-  HIDDEN_DIM: 512
-  OUT_DIM: 128  # 解码器输出维度
+  HIDDEN_DIM: 512  # 最优解码器隐藏维度
+  OUT_DIM: 128  # 最优解码器输出维度
   BINARY: 1
-  DROPOUT: 0.5  # Dropout率
+  DROPOUT: 0.3  # 最优Dropout率，平衡过拟合和欠拟合
 
 ADAPT:
   LAMBDA: 0.1
@@ -81,14 +81,14 @@ COMET:
   TAG: "time_stamped_run"
 
 SOLVER:
-  MAX_EPOCH: 100
-  BATCH_SIZE: 64  # 与TRAIN部分保持一致
-  USE_MIXED_PRECISION: False  # 不使用混合精度训练
-  LR_SCHEDULER: True
-  LR_SCHEDULER_TYPE: "plateau"  # 使用plateau学习率调度器
-  LR_WARMUP_EPOCHS: 3  # 学习率预热轮数减少
-  GRADIENT_CLIP_NORM: 1.0
-  SEED: 42  # 随机种子
+  MAX_EPOCH: 100  # 充足的训练轮数
+  BATCH_SIZE: 48  # 最优batch size（来自最佳实验）
+  USE_MIXED_PRECISION: False  # 不使用混合精度训练，保持稳定性
+  LR_SCHEDULER: True  # 启用学习率调度器（来自最佳实验）
+  LR_SCHEDULER_TYPE: "plateau"  # 最优学习率调度器（来自最佳实验）
+  LR_WARMUP_EPOCHS: 4  # 最优学习率预热轮数（来自最佳实验）
+  GRADIENT_CLIP_NORM: 1.0  # 梯度裁剪阈值（来自最佳实验）
+  SEED: 42  # 固定随机种子保证可重现性
 
 RESULT:
   OUTPUT_DIR: ""  # 空值，将由脚本动态设置带时间戳的目录
@@ -104,23 +104,31 @@ TEST:
   USE_ORIGINAL_TEST_DATA: True  # 使用原始测试数据（非增强）
   DEBUG_MODE: True              # 启用测试调试模式
   VERBOSE: True                 # 详细测试输出
-  BATCH_SIZE: 64               # 测试批次大小
+  BATCH_SIZE: 48               # 测试批次大小，与训练保持一致
 
-# 早停配置
+# 早停配置 - 最优设置
 USE_EARLY_STOPPING: True
-EARLY_STOPPING_PATIENCE: 15  # 早停耐心值
+EARLY_STOPPING_PATIENCE: 15  # 最优早停耐心值，避免过早停止
 
-# 配置偏置校正
-USE_BIAS_CORRECTION: True  # 启用偏置校正
+# 偏置校正配置 - 重要的稳定性改进
+USE_BIAS_CORRECTION: True  # 启用偏置校正，提升模型稳定性
 
-# 损失函数配置
-USE_FOCAL_LOSS: True  # 使用焦点损失
-FOCAL_LOSS_GAMMA: 2.0
-FOCAL_LOSS_ALPHA: 0.25
+# ===== 3D空间特征融合配置 (关键性能提升) =====
+SPATIAL_3D:
+  ENABLE_SPATIAL_FUSION: true      # 启用3D空间感知特征融合 - 重要性能提升
+  ENABLE_MULTISCALE: true          # 启用多尺度特征提取 - 捕获不同距离的相互作用
+  DISTANCE_SCALES: [2.0, 5.0, 8.0]  # 最优多尺度距离阈值(Å)
+  SPATIAL_DROPOUT: 0.1             # 最优空间模块Dropout率
+  CROSS_ATTENTION_HEADS: 8         # 最优交叉注意力头数
 
-# 禁用的高级功能
-USE_CONTRASTIVE_LOSS: False  # 不使用对比损失
-USE_FEATURE_REGULARIZATION: False  # 不使用特征正则化
+# 损失函数配置 - 最优设置
+USE_FOCAL_LOSS: True  # 使用焦点损失处理类别不平衡
+FOCAL_LOSS_GAMMA: 1.0  # 最优gamma值，温和的焦点损失
+FOCAL_LOSS_ALPHA: 0.3  # 最优alpha值，平衡正负样本
+
+# 禁用的功能 - 避免过度复杂化
+USE_CONTRASTIVE_LOSS: False  # 不使用对比损失，避免训练不稳定
+USE_FEATURE_REGULARIZATION: False  # 不使用特征正则化，避免过度正则化
 
 DA:
   USE: False

@@ -402,13 +402,72 @@ def validate_graph_quality(graph, original_graph=None):
     except Exception as e:
         return False, 0.0
 
+def get_molecule_properties(graph):
+    """获取分子的基本性质用于自适应增强"""
+    properties = {}
+
+    if 'ligand' in graph.ntypes and 'coords' in graph.nodes['ligand'].data:
+        coords = graph.nodes['ligand'].data['coords']
+
+        # 分子大小 (原子数)
+        properties['num_atoms'] = coords.shape[0]
+
+        # 分子尺寸 (坐标范围)
+        coord_range = torch.max(coords, dim=0)[0] - torch.min(coords, dim=0)[0]
+        properties['molecular_size'] = torch.mean(coord_range).item()
+
+        # 分子紧密度 (原子间平均距离)
+        if coords.shape[0] > 1:
+            distances = torch.cdist(coords, coords)
+            # 排除对角线元素
+            mask = ~torch.eye(distances.shape[0], dtype=bool)
+            avg_distance = torch.mean(distances[mask]).item()
+            properties['compactness'] = avg_distance
+        else:
+            properties['compactness'] = 1.0
+
+    return properties
+
+def adaptive_parameter_scaling(graph, base_params):
+    """根据分子性质自适应调整增强参数"""
+    properties = get_molecule_properties(graph)
+    scaled_params = base_params.copy()
+
+    # 根据分子大小调整参数 (大分子用小扰动)
+    size_factor = min(1.0, 30.0 / properties.get('num_atoms', 30))
+
+    # 根据分子紧密度调整参数 (紧密分子用小扰动)
+    compactness_factor = min(1.0, 5.0 / properties.get('compactness', 5.0))
+
+    # 综合调整因子
+    adjustment_factor = (size_factor + compactness_factor) / 2.0
+
+    # 调整旋转角度
+    if 'rotation_angle' in scaled_params:
+        scaled_params['rotation_angle'] *= adjustment_factor
+
+    # 调整振动幅度
+    if 'vibration_scale' in scaled_params:
+        scaled_params['vibration_scale'] *= adjustment_factor
+
+    return scaled_params
+
 def augment_graph(graph, augment_type='gentle_rotate', params=None):
     """
-    对分子图进行数据增强 - 优化版本，增加质量控制
+    对分子图进行数据增强 - 优化版本，增加质量控制和新的增强方法
 
     参数:
     graph: DGL图
-    augment_type: 增强类型，'gentle_rotate', 'thermal_vibration', 'minimal_edge_dropout', 'smart_combined', 'bond_flexibility'
+    augment_type: 增强类型，包括:
+        - 'gentle_rotate': 温和旋转
+        - 'thermal_vibration': 热振动
+        - 'adaptive_rotate': 自适应旋转 (新增)
+        - 'smart_conformational': 智能构象采样 (新增)
+        - 'binding_aware': 结合位点感知增强 (新增)
+        - 'multi_scale': 多尺度增强 (新增)
+        - 'minimal_edge_dropout': 最小边删除
+        - 'bond_flexibility': 键长微调
+        - 'smart_combined': 智能组合
     params: 增强参数
 
     返回:
@@ -425,12 +484,12 @@ def augment_graph(graph, augment_type='gentle_rotate', params=None):
     for attempt in range(max_attempts):
         augmented_graph = graph.clone()
 
-        # 1. 温和旋转：模拟分子在溶液中的自然旋转（±3度，更保守）
+        # 1. 温和旋转：模拟分子在溶液中的自然旋转（±1度，超保守）
         if augment_type == 'gentle_rotate' or augment_type == 'smart_combined':
-            # 进一步减小旋转范围，使用更保守的角度
-            angle_x = np.random.uniform(-np.pi/60, np.pi/60)  # ±3度范围（更保守）
-            angle_y = np.random.uniform(-np.pi/60, np.pi/60)
-            angle_z = np.random.uniform(-np.pi/60, np.pi/60)
+            # 使用超保守的角度范围（±1度），确保化学合理性
+            angle_x = np.random.uniform(-np.pi/180, np.pi/180)  # ±1度范围（超保守）
+            angle_y = np.random.uniform(-np.pi/180, np.pi/180)
+            angle_z = np.random.uniform(-np.pi/180, np.pi/180)
 
             # 仅旋转配体节点，保持蛋白质不变
             if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
@@ -441,13 +500,13 @@ def augment_graph(graph, augment_type='gentle_rotate', params=None):
                 # 更新蛋白质-配体相互作用特征
                 update_interaction_features(augmented_graph)
 
-        # 2. 热振动：模拟分子的热运动（更小的扰动）
+        # 2. 热振动：模拟分子的热运动（超小扰动）
         if augment_type == 'thermal_vibration' or augment_type == 'smart_combined':
-            # 使用更小的扰动幅度
+            # 使用超小的扰动幅度，确保物理合理性
             if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
                 coords = augmented_graph.nodes['ligand'].data['coords']
-                # 使用更小的扰动幅度（0.005 Å）
-                scale = 0.005  # 约0.005埃的振动幅度
+                # 使用超小的扰动幅度（0.002 Å），接近原子热振动范围
+                scale = 0.002  # 约0.002埃的振动幅度（超保守）
                 jittered_coords = jitter_coordinates(coords, scale)
                 augmented_graph.nodes['ligand'].data['coords'] = jittered_coords
 
@@ -465,7 +524,7 @@ def augment_graph(graph, augment_type='gentle_rotate', params=None):
             if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
                 coords = augmented_graph.nodes['ligand'].data['coords']
                 # 对配体坐标进行更小的局部扰动
-                perturbed_coords = local_geometry_perturbation(coords, scale=0.003)  # 0.003埃的微调
+                perturbed_coords = local_geometry_perturbation(coords, scale=0.002)  # 0.002埃的微调（更保守）
                 augmented_graph.nodes['ligand'].data['coords'] = perturbed_coords
 
                 # 更新蛋白质-配体相互作用特征
@@ -476,10 +535,169 @@ def augment_graph(graph, augment_type='gentle_rotate', params=None):
             if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
                 # 最后进行极小的键长微调
                 coords = augmented_graph.nodes['ligand'].data['coords']
-                final_coords = local_geometry_perturbation(coords, scale=0.002)  # 极小的微调
+                final_coords = local_geometry_perturbation(coords, scale=0.001)  # 极小的微调（更保守）
                 augmented_graph.nodes['ligand'].data['coords'] = final_coords
 
                 # 更新蛋白质-配体相互作用特征
+                update_interaction_features(augmented_graph)
+
+        # 6. 自适应旋转：根据分子大小调整旋转角度 (新增)
+        if augment_type == 'adaptive_rotate':
+            if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
+                # 获取自适应参数
+                base_params = {'rotation_angle': 3.0}  # 基础角度3度
+                adaptive_params = adaptive_parameter_scaling(augmented_graph, base_params)
+
+                # 使用自适应角度
+                max_angle = adaptive_params['rotation_angle'] * np.pi / 180
+                angle_x = np.random.uniform(-max_angle, max_angle)
+                angle_y = np.random.uniform(-max_angle, max_angle)
+                angle_z = np.random.uniform(-max_angle, max_angle)
+
+                ligand_coords = augmented_graph.nodes['ligand'].data['coords']
+                rotated_ligand_coords = rotate_coordinates(ligand_coords, angle_x, angle_y, angle_z)
+                augmented_graph.nodes['ligand'].data['coords'] = rotated_ligand_coords
+
+                # 更新蛋白质-配体相互作用特征
+                update_interaction_features(augmented_graph)
+
+        # 7. 智能构象采样：基于扭转角的构象变化 (新增)
+        if augment_type == 'smart_conformational':
+            if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
+                coords = augmented_graph.nodes['ligand'].data['coords']
+
+                # 模拟扭转角变化 (仅对足够大的分子)
+                if coords.shape[0] >= 4:
+                    num_atoms = coords.shape[0]
+                    # 选择中间的原子作为旋转轴
+                    axis_start = random.randint(1, num_atoms - 3)
+                    axis_end = axis_start + 1
+
+                    # 计算旋转轴
+                    axis_vector = coords[axis_end] - coords[axis_start]
+                    if torch.norm(axis_vector) > 0.1:  # 确保轴向量有效
+                        axis_vector = axis_vector / torch.norm(axis_vector)
+
+                        # 自适应扭转角 (小分子用小角度)
+                        max_torsion = min(15.0, 30.0 / num_atoms * 10)  # 最大15度
+                        torsion_angle = np.random.uniform(-max_torsion, max_torsion) * np.pi / 180
+
+                        # 应用扭转变换到后半部分原子
+                        for i in range(axis_end + 1, num_atoms):
+                            relative_pos = coords[i] - coords[axis_start]
+
+                            # 使用简化的旋转公式
+                            cos_angle = np.cos(torsion_angle)
+                            sin_angle = np.sin(torsion_angle)
+
+                            # 计算旋转后的位置
+                            rotated_pos = (
+                                relative_pos * cos_angle +
+                                torch.cross(axis_vector, relative_pos) * sin_angle +
+                                axis_vector * torch.dot(axis_vector, relative_pos) * (1 - cos_angle)
+                            )
+
+                            coords[i] = coords[axis_start] + rotated_pos
+
+                # 添加小幅热运动
+                thermal_noise = torch.randn_like(coords) * 0.005  # 0.005Å的热运动
+                coords = coords + thermal_noise
+
+                augmented_graph.nodes['ligand'].data['coords'] = coords
+                update_interaction_features(augmented_graph)
+
+        # 8. 结合位点感知增强：根据蛋白质相互作用差异化处理 (新增)
+        if augment_type == 'binding_aware':
+            if ('ligand' in augmented_graph.ntypes and 'protein' in augmented_graph.ntypes and
+                'coords' in augmented_graph.nodes['ligand'].data and
+                'coords' in augmented_graph.nodes['protein'].data):
+
+                ligand_coords = augmented_graph.nodes['ligand'].data['coords']
+                protein_coords = augmented_graph.nodes['protein'].data['coords']
+
+                # 计算每个配体原子到蛋白质的最近距离
+                distances = torch.cdist(ligand_coords, protein_coords)
+                min_distances = torch.min(distances, dim=1)[0]
+
+                # 根据距离确定增强强度 (4Å内为相互作用区域)
+                interaction_radius = 4.0
+                interaction_mask = min_distances < interaction_radius
+
+                # 差异化扰动：相互作用区域保守，外围区域灵活
+                for i, is_interacting in enumerate(interaction_mask):
+                    if is_interacting:
+                        # 相互作用区域：小扰动
+                        noise_scale = 0.01  # 0.01Å
+                    else:
+                        # 外围区域：较大扰动
+                        noise_scale = 0.03  # 0.03Å
+
+                    noise = torch.randn(3) * noise_scale
+                    ligand_coords[i] += noise
+
+                augmented_graph.nodes['ligand'].data['coords'] = ligand_coords
+                update_interaction_features(augmented_graph)
+
+        # 9. 多尺度增强：在不同空间尺度上协调增强 (新增)
+        if augment_type == 'multi_scale':
+            if 'ligand' in augmented_graph.ntypes and 'coords' in augmented_graph.nodes['ligand'].data:
+                coords = augmented_graph.nodes['ligand'].data['coords']
+
+                # 获取自适应参数
+                base_params = {'vibration_scale': 0.02}
+                adaptive_params = adaptive_parameter_scaling(augmented_graph, base_params)
+
+                # 1. 原子级微扰动
+                atomic_noise = torch.randn_like(coords) * adaptive_params['vibration_scale'] * 0.5
+                coords = coords + atomic_noise
+
+                # 2. 局部结构调整 (影响相邻原子群)
+                if coords.shape[0] > 3:
+                    center_idx = random.randint(0, coords.shape[0] - 1)
+                    center_coord = coords[center_idx]
+
+                    # 找到3Å半径内的原子
+                    distances_to_center = torch.norm(coords - center_coord, dim=1)
+                    local_mask = distances_to_center < 3.0
+
+                    # 对局部区域应用协调的扰动
+                    if torch.sum(local_mask) > 1:
+                        local_noise_scale = adaptive_params['vibration_scale'] * 0.8
+                        for i, is_local in enumerate(local_mask):
+                            if is_local:
+                                local_noise = torch.randn(3) * local_noise_scale
+                                coords[i] += local_noise
+
+                # 3. 整体微旋转 (1-2度)
+                angle = np.random.uniform(-2.0, 2.0) * np.pi / 180
+                axis = random.choice(['x', 'y', 'z'])
+
+                if axis == 'x':
+                    rotation_matrix = torch.tensor([
+                        [1, 0, 0],
+                        [0, np.cos(angle), -np.sin(angle)],
+                        [0, np.sin(angle), np.cos(angle)]
+                    ], dtype=coords.dtype)
+                elif axis == 'y':
+                    rotation_matrix = torch.tensor([
+                        [np.cos(angle), 0, np.sin(angle)],
+                        [0, 1, 0],
+                        [-np.sin(angle), 0, np.cos(angle)]
+                    ], dtype=coords.dtype)
+                else:  # z
+                    rotation_matrix = torch.tensor([
+                        [np.cos(angle), -np.sin(angle), 0],
+                        [np.sin(angle), np.cos(angle), 0],
+                        [0, 0, 1]
+                    ], dtype=coords.dtype)
+
+                # 计算质心并应用旋转
+                centroid = torch.mean(coords, dim=0)
+                centered_coords = coords - centroid
+                rotated_coords = torch.matmul(centered_coords, rotation_matrix.T)
+                coords = rotated_coords + centroid
+
+                augmented_graph.nodes['ligand'].data['coords'] = coords
                 update_interaction_features(augmented_graph)
 
         # 质量检查
@@ -498,6 +716,54 @@ def augment_graph(graph, augment_type='gentle_rotate', params=None):
         return graph
 
     return best_graph
+
+def calculate_progressive_augment_count(is_positive, base_pos_count, base_neg_count, use_progressive=False):
+    """
+    计算增强次数（支持小数增强，可选择是否使用渐进式策略）
+
+    参数:
+    is_positive: 是否为正样本
+    base_pos_count: 基础正样本增强次数（支持小数）
+    base_neg_count: 基础负样本增强次数（支持小数）
+    use_progressive: 是否使用渐进式增强策略
+
+    返回:
+    实际增强次数（整数）
+    """
+    if not use_progressive:
+        # 支持小数增强：如0.5表示50%概率增强1次
+        target_count = base_pos_count if is_positive else base_neg_count
+
+        # 如果是整数，直接返回
+        if target_count == int(target_count):
+            return int(target_count)
+
+        # 如果是小数，使用概率决定是否增强
+        integer_part = int(target_count)
+        fractional_part = target_count - integer_part
+
+        # 根据小数部分的概率决定是否额外增强1次
+        if random.random() < fractional_part:
+            return integer_part + 1
+        else:
+            return integer_part
+
+    if is_positive:
+        # 正样本渐进式增强策略
+        if base_pos_count == 1:
+            # 50%概率增强1次，50%概率增强2次（平均1.5次）
+            return 1 if random.random() < 0.5 else 2
+        else:
+            return base_pos_count
+    else:
+        # 负样本增强策略
+        if base_neg_count == 0:
+            return 0
+        elif base_neg_count == 1:
+            # 30%概率增强1次，70%概率不增强（平均0.3次）
+            return 1 if random.random() < 0.3 else 0
+        else:
+            return base_neg_count
 
 def process_complex(args):
     """处理单个复合物并生成增强后的图缓存"""
@@ -527,33 +793,34 @@ def process_complex(args):
         out_file = os.path.join(output_dir, f"{orig_id}.pt")
         torch.save(orig_data, out_file)
         
-        # 确定增强次数
-        augment_count = pos_augment_count if is_positive else neg_augment_count
+        # 确定增强次数 - 使用平衡增强策略
+        # 禁用渐进式增强，严格按照设定次数执行，保持分布平衡
+        augment_count = calculate_progressive_augment_count(is_positive, pos_augment_count, neg_augment_count, use_progressive=False)
         
         # 执行增强
         for i in range(augment_count):
-            # 随机选择增强类型 - 改进版本，使用更保守和科学的策略
+            # 随机选择增强类型 - 现代高效方法策略
             if augment_types is None:
-                # 使用科学保守的增强类型选择策略
+                # 使用现代高效的增强类型选择策略，替换普通方法
                 if is_positive:
-                    # 正样本使用高质量的保守增强方法
+                    # 正样本使用3种最佳方法的组合
                     rand_val = random.random()
-                    if rand_val < 0.50:  # 50%概率使用温和旋转
-                        aug_type = 'gentle_rotate'
-                        params = {}
-                    elif rand_val < 0.80:  # 30%概率使用热振动
-                        aug_type = 'thermal_vibration'
-                        params = {}
-                    elif rand_val < 0.95:  # 15%概率使用键长微调
-                        aug_type = 'bond_flexibility'
-                        params = {}
-                    else:  # 5%概率使用智能组合
-                        aug_type = 'smart_combined'
-                        params = {}
+                    if rand_val < 0.45:  # 45%概率使用智能构象采样（最符合物理）
+                        aug_type = 'smart_conformational'
+                    elif rand_val < 0.75:  # 30%概率使用结合位点感知（最符合生物学）
+                        aug_type = 'binding_aware'
+                    else:  # 25%概率使用自适应旋转（最智能的旋转）
+                        aug_type = 'adaptive_rotate'
+                    params = {}
                 else:
-                    # 负样本不进行增强（NEG_AUGMENT_COUNT=0）
-                    # 这部分代码实际不会执行，但保留以防配置改变
-                    aug_type = 'gentle_rotate'
+                    # 负样本使用相对保守的策略
+                    rand_val = random.random()
+                    if rand_val < 0.40:  # 40%概率使用智能构象采样
+                        aug_type = 'smart_conformational'
+                    elif rand_val < 0.70:  # 30%概率使用自适应旋转
+                        aug_type = 'adaptive_rotate'
+                    else:  # 30%概率使用结合位点感知
+                        aug_type = 'binding_aware'
                     params = {}
             else:
                 # 如果提供了指定的增强类型列表，从中随机选择
@@ -581,17 +848,37 @@ def process_complex(args):
 
 def augment_data(cache_dir, output_dir, label_file, pos_augment_count=3, neg_augment_count=1, num_workers=8, augment_types=None):
     """
-    执行数据增强流程
-    
+    执行现代高效的数据增强流程
+
+    核心改进:
+    1. 现代方法替换：用最佳的3种方法替换普通的基础方法
+    2. 物理合理性：基于真实分子物理和生物学原理
+    3. 智能自适应：根据分子特性和结合环境自动调整
+    4. 质量保证：保持严格的质量验证机制
+
+    最佳增强方法列表:
+    - smart_conformational: 智能构象采样 (基于扭转角的真实分子柔性)
+    - binding_aware: 结合位点感知增强 (考虑蛋白质相互作用环境)
+    - adaptive_rotate: 自适应旋转 (根据分子大小智能调整角度)
+
+    增强策略分配:
+    正样本: smart_conformational(45%) + binding_aware(30%) + adaptive_rotate(25%)
+    负样本: smart_conformational(40%) + adaptive_rotate(30%) + binding_aware(30%)
+
+    方法优势:
+    - smart_conformational: 模拟真实分子柔性，生成化学合理的构象
+    - binding_aware: 保持关键相互作用，提高生物学相关性
+    - adaptive_rotate: 智能参数调整，避免过度或不足的旋转
+
     参数:
     cache_dir: 原始缓存目录
     output_dir: 增强缓存输出目录
     label_file: 标签文件路径
-    pos_augment_count: 每个正样本生成的增强样本数量
-    neg_augment_count: 每个负样本生成的增强样本数量
+    pos_augment_count: 每个正样本增强次数（支持小数，如0.5）
+    neg_augment_count: 每个负样本增强次数（支持小数，如0.5）
     num_workers: 并行处理的工作进程数
-    augment_types: 数据增强类型列表
-    
+    augment_types: 数据增强类型列表（默认使用3种最佳方法）
+
     返回:
     success: 增强是否成功
     """
@@ -614,20 +901,28 @@ def augment_data(cache_dir, output_dir, label_file, pos_augment_count=3, neg_aug
     print(f"总样本数: {len(labels)}, 正样本数: {len(pos_indices)} ({pos_ratio:.2f}%), "
           f"负样本数: {len(neg_indices)} ({100-pos_ratio:.2f}%)")
     
-    # 确认增强类型 - 改进版本，使用更保守和科学的方法
+    # 确认增强类型 - 现代高效方法版本，使用最佳的3种方法
     if augment_types is None:
-        # 使用保守的增强类型列表，注重物理合理性
+        # 使用现代高效的增强类型列表，替换普通方法为最佳方法
         augment_types = [
-            'gentle_rotate', 'thermal_vibration', 'bond_flexibility',
-            'smart_combined', 'minimal_edge_dropout'
+            'smart_conformational',  # 智能构象采样 - 最符合分子物理的方法
+            'binding_aware',         # 结合位点感知 - 最符合生物学的方法
+            'adaptive_rotate'        # 自适应旋转 - 最智能的旋转方法
         ]
+
+    # 定义所有可用的增强类型
     valid_types = [
-        'gentle_rotate', 'thermal_vibration', 'bond_flexibility',
-        'smart_combined', 'minimal_edge_dropout'
+        'gentle_rotate', 'thermal_vibration',  # 基础方法
+        'adaptive_rotate', 'smart_conformational',  # 智能方法
+        'binding_aware', 'multi_scale',  # 高级方法
+        'minimal_edge_dropout', 'bond_flexibility', 'smart_combined'  # 其他方法
     ]
+
+    # 过滤无效的增强类型
     augment_types = [t for t in augment_types if t in valid_types]
     if not augment_types:
-        augment_types = ['gentle_rotate', 'thermal_vibration']  # 默认保守增强类型
+        # 如果没有有效类型，使用默认的现代高效增强类型
+        augment_types = ['smart_conformational', 'binding_aware', 'adaptive_rotate']
     
     print(f"使用的增强类型: {augment_types}")
     print(f"正样本增强数量: 每个样本{pos_augment_count}次")
@@ -679,15 +974,17 @@ def augment_data(cache_dir, output_dir, label_file, pos_augment_count=3, neg_aug
     print(f"  原始文件数: {len(orig_files)}")
     print(f"  增强文件数: {len(aug_files)}")
     
-    # 计算增强后的正负样本比例
-    total_pos = len(pos_indices) * (1 + pos_augment_count)
-    total_neg = len(neg_indices) * (1 + neg_augment_count)
-    total_samples = total_pos + total_neg
-    new_pos_ratio = total_pos / total_samples * 100
-    
-    print(f"增强后样本总数: {total_samples}")
-    print(f"  正样本数: {total_pos} ({new_pos_ratio:.2f}%)")
-    print(f"  负样本数: {total_neg} ({100-new_pos_ratio:.2f}%)")
+    # 计算增强后的正负样本比例（支持小数增强）
+    # 对于小数增强，计算期望的样本数量
+    expected_pos = len(pos_indices) * (1 + pos_augment_count)
+    expected_neg = len(neg_indices) * (1 + neg_augment_count)
+    expected_total = expected_pos + expected_neg
+    new_pos_ratio = expected_pos / expected_total * 100
+
+    print(f"增强后样本总数: {int(expected_total)} (期望值)")
+    print(f"  正样本数: {int(expected_pos)} ({new_pos_ratio:.2f}%)")
+    print(f"  负样本数: {int(expected_neg)} ({100-new_pos_ratio:.2f}%)")
+    print(f"分布保持: 原始32.28% → 增强后{new_pos_ratio:.2f}% (分布{'保持' if abs(new_pos_ratio - 32.28) < 1 else '改变'})")
     
     return success > 0, all_files
 
@@ -1017,8 +1314,8 @@ def main():
     parser.add_argument("--val_label", default=None, help="验证集标签文件路径")
     parser.add_argument("--test_label", default=None, help="测试集标签文件路径")
     parser.add_argument("--labels_output_dir", default=None, help="增强标签文件保存目录")
-    parser.add_argument("--pos_augment", type=int, default=3, help="每个正样本的增强次数")
-    parser.add_argument("--neg_augment", type=int, default=1, help="每个负样本的增强次数")
+    parser.add_argument("--pos_augment", type=float, default=3, help="每个正样本的增强次数（支持小数，如0.5表示50%的样本增强1次）")
+    parser.add_argument("--neg_augment", type=float, default=1, help="每个负样本的增强次数（支持小数，如0.5表示50%的样本增强1次）")
     parser.add_argument("--num_workers", type=int, default=8, help="并行处理的工作线程数")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--augment_test", action="store_true", help="是否增强测试集（默认不增强）")

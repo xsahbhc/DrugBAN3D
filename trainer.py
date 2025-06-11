@@ -744,6 +744,16 @@ class Trainer(object):
                         continue
                     
                     if self.n_class == 1:
+                        # 添加调试信息和形状检查
+                        if i < 5:  # 只在前几个批次打印调试信息
+                            print(f"批次 {i}: score形状={score.shape}, labels形状={labels.shape}")
+
+                        # 确保score和labels都是有效的张量
+                        if score.numel() == 0 or labels.numel() == 0:
+                            print(f"警告: 批次 {i} 包含空张量，跳过")
+                            error_batches += 1
+                            continue
+
                         n, loss = binary_cross_entropy(score, labels, self.label_smoothing)
                     else:
                         n, loss = cross_entropy_logits(score, labels)

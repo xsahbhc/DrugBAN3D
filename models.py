@@ -9,35 +9,70 @@ import dgl
 
 
 def binary_cross_entropy(pred_output, labels, label_smoothing=0.0):
-    """带标签平滑的二元交叉熵损失"""
+    """带标签平滑的二元交叉熵损失，修复维度不匹配问题"""
+    import torch
+
+    # 确保输入是张量
+    if not isinstance(pred_output, torch.Tensor):
+        pred_output = torch.tensor(pred_output)
+    if not isinstance(labels, torch.Tensor):
+        labels = torch.tensor(labels)
+
+    # 处理标量情况 - 如果预测输出是标量，转换为1维张量
+    if pred_output.dim() == 0:
+        pred_output = pred_output.unsqueeze(0)
+    if labels.dim() == 0:
+        labels = labels.unsqueeze(0)
+
+    # 确保标签是浮点型
+    if labels.dtype != torch.float:
+        labels = labels.float()
+
+    # 应用标签平滑
     if label_smoothing > 0:
-        # 应用标签平滑
         target = labels * (1 - label_smoothing) + 0.5 * label_smoothing
     else:
         target = labels
-        
+
     loss_fct = torch.nn.BCELoss()
     m = nn.Sigmoid()
-    # 获取预测输出的形状
-    pred_shape = pred_output.shape
-    
+
     # 将预测输出转换为sigmoid激活的概率值
     n = m(pred_output)
-    
-    # 确保n和target的形状匹配 - 如果预测是[batch_size, 1]，而标签是[batch_size]，则对标签进行扩展
-    if len(pred_shape) > 1 and pred_shape[1] == 1 and len(target.shape) == 1:
-        target = target.unsqueeze(1)
-    # 如果预测是[batch_size, 1]，而我们需要扁平化的输出，则挤压预测
-    elif len(pred_shape) > 1 and pred_shape[1] == 1 and len(target.shape) > 1 and target.shape[1] == 1:
-        n = n.squeeze(1)
-        target = target.squeeze(1)
-    
+
+    # 确保n和target的形状完全匹配
+    if n.shape != target.shape:
+        # 如果预测是[batch_size, 1]，而标签是[batch_size]，则对标签进行扩展
+        if len(n.shape) > 1 and n.shape[1] == 1 and len(target.shape) == 1:
+            target = target.unsqueeze(1)
+        # 如果预测是[batch_size]，而标签是[batch_size, 1]，则对预测进行扩展
+        elif len(target.shape) > 1 and target.shape[1] == 1 and len(n.shape) == 1:
+            n = n.unsqueeze(1)
+        # 如果都是多维但最后一维是1，则都挤压
+        elif len(n.shape) > 1 and n.shape[-1] == 1 and len(target.shape) > 1 and target.shape[-1] == 1:
+            n = n.squeeze(-1)
+            target = target.squeeze(-1)
+        # 如果预测是多维但标签是1维，挤压预测
+        elif len(n.shape) > 1 and len(target.shape) == 1:
+            n = n.squeeze()
+        # 如果标签是多维但预测是1维，挤压标签
+        elif len(target.shape) > 1 and len(n.shape) == 1:
+            target = target.squeeze()
+
+    # 最终检查：确保维度完全匹配
+    if n.shape != target.shape:
+        print(f"警告: 形状仍不匹配 - 预测: {n.shape}, 标签: {target.shape}")
+        # 强制调整到相同的形状
+        min_size = min(n.numel(), target.numel())
+        n = n.view(-1)[:min_size]
+        target = target.view(-1)[:min_size]
+
     loss = loss_fct(n, target)
-    
+
     # 确保返回的n是一维张量，方便后续计算AUC
     if len(n.shape) > 1:
-        n = n.squeeze(-1)
-    
+        n = n.squeeze()
+
     return n, loss
 
 

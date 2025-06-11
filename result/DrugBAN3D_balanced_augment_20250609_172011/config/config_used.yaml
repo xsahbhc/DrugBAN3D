@@ -1,0 +1,118 @@
+ADAPT:
+  ENTROPY_LAMBDA: 1.0
+  LAMBDA: 0.1
+  METHOD: None
+  RANDOM_DIM: 512
+  USE_TARGET: False
+BCN:
+  HEADS: 8
+COMET:
+  PROJECT: DrugBAN3D
+  TAG: time_stamped_run
+  USE: False
+  WORKSPACE: xsahbhc
+CONTRASTIVE_LOSS_WEIGHT: 0.5
+DA:
+  INIT_EPOCH: 0
+  LAMB_DA: 0.1
+  METHOD: None
+  ORIGINAL_RANDOM: False
+  RANDOM_LAYER: False
+  USE: False
+  USE_ENTROPY: False
+DATA:
+  TEST_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv
+  TRAIN_FILE: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/data/augmented/labels/20250609_172011/train_augmented.csv
+  VAL_FILE: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/data/augmented/labels/20250609_172011/valid_augmented.csv
+DATA_3D:
+  DIS_THRESHOLD: 5.0
+  LABEL_FILE: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/data/augmented/labels/20250609_172011/train_augmented.csv
+  NUM_WORKERS: 16
+  ROOT_DIR: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_pdb
+  TEST_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv
+  TRAIN_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv
+  VAL_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv
+DEBUG_MODE: False
+DECODER:
+  BINARY: 1
+  DROPOUT: 0.3
+  HIDDEN_DIM: 512
+  IN_DIM: 384
+  OUT_DIM: 128
+DRUG:
+  ATOM_MAX: 50
+  HIDDEN_LAYERS: [128, 256, 256]
+  NODE_IN_EMBEDDING: 128
+  NODE_IN_FEATS: 35
+  PADDING: True
+EARLY_STOPPING_PATIENCE: 15
+EDGE_FEATS:
+  inter_l2p: 11
+  inter_p2l: 11
+  intra_l: 17
+  intra_p: 17
+FEATURE_REGULARIZATION_WEIGHT: 0.01
+FOCAL_LOSS_ALPHA: 0.3
+FOCAL_LOSS_GAMMA: 1.0
+GNN:
+  HIDDEN_DIM: 384
+  NUM_LAYERS: 4
+MODEL_TYPE: DrugBAN3D
+PATH:
+  CACHE_DIR: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/data/augmented/graphs/20250609_172011
+  DATA_DIR: datasets
+  RESULT_DIR: result
+PROTEIN:
+  EMBEDDING_DIM: 64
+  KERNEL_SIZE: [4, 8, 12]
+  NODE_IN_FEATS: 35
+  NUM_FILTERS: [32, 64, 96]
+  PADDING: True
+  SEQ_MAX: 1000
+RESULT:
+  OUTPUT_DIR: result/DrugBAN3D_balanced_augment_20250609_172011
+  SAVE_BEST_ONLY: True
+  SAVE_EACH_EPOCH: False
+  SAVE_MODEL: True
+  SAVE_TEST_DETAILS: True
+  SAVE_TEST_PREDICTIONS: True
+  USE_STATE_DICT: True
+SOLVER:
+  BATCH_SIZE: 48
+  GRADIENT_CLIP_NORM: 1.0
+  LR_SCHEDULER: True
+  LR_SCHEDULER_TYPE: plateau
+  LR_WARMUP_EPOCHS: 4
+  MAX_EPOCH: 100
+  SEED: 42
+  USE_MIXED_PRECISION: False
+SPATIAL_3D:
+  CROSS_ATTENTION_HEADS: 8
+  DISTANCE_SCALES: [2.0, 5.0, 8.0]
+  ENABLE_MULTISCALE: True
+  ENABLE_SPATIAL_FUSION: True
+  SPATIAL_DROPOUT: 0.1
+TEST:
+  BATCH_SIZE: 48
+  DEBUG_MODE: True
+  USE_ORIGINAL_TEST_DATA: True
+  VERBOSE: True
+TRAIN:
+  BATCH_SIZE: 48
+  D_LEARNING_RATE: 0.0004
+  D_STEPS_PER_G_STEP: 1
+  EPOCH: 100
+  GRADIENT_ACCUMULATE_STEPS: 2
+  GRADIENT_CLIP_NORM: 1.0
+  G_LEARNING_RATE: 0.0002
+  LABEL_SMOOTHING: 0.05
+  POS_WEIGHT: 1.05
+  RESUME_CHECKPOINT: 
+  WEIGHT_DECAY: 0.0004
+USE_BIAS_CORRECTION: True
+USE_CONTRASTIVE_LOSS: False
+USE_EARLY_STOPPING: True
+USE_FEATURE_REGULARIZATION: False
+USE_FOCAL_LOSS: True
+USE_ORIGINAL_TEST_DATA: True
+VERBOSE: True

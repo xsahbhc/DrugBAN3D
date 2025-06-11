@@ -25,7 +25,7 @@ TEST_LABEL="/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_c
 CONFIG_FILE="configs/DrugBAN3D_cached.yaml"  # 配置文件
 
 # 使用时间戳创建唯一的结果目录
-BASE_RESULT_DIR="result/DrugBAN3D_improved_augment_${TIMESTAMP}"  # 改进数据增强版本
+BASE_RESULT_DIR="result/DrugBAN3D_balanced_augment_${TIMESTAMP}"  # 平衡增强版本
 
 # 定义更清晰的子目录结构
 MODELS_DIR="${BASE_RESULT_DIR}/models"                     # 模型文件目录
@@ -42,12 +42,11 @@ LOG_FILE="${LOGS_DIR}/train.log"  # 日志文件
 FORCE_REGENERATE=true  # 默认强制重新生成增强数据
 TRAIN_MODEL=true  # 默认执行训练
 
-# 优化的数据增强参数：高质量少量增强策略
-# 目标：适度增强正样本，保持数据质量，避免过拟合
-POS_AUGMENT_COUNT=1  # 每个正样本增强1次（32.28% × 2 ≈ 64.56%）
-NEG_AUGMENT_COUNT=0  # 负样本不增强，保持原始质量（67.72% × 1 = 67.72%）
-NUM_WORKERS=16  # 并行处理的工作进程数
-# 预期结果：训练集正负样本比例约为 48.8% vs 51.2%，总数据量适中
+
+POS_AUGMENT_COUNT=1 
+NEG_AUGMENT_COUNT=0  
+NUM_WORKERS=16 
+
 
 # 确保基础目录存在
 mkdir -p runlog
@@ -66,12 +65,40 @@ while [[ $# -gt 0 ]]; do
             REUSE_LATEST=true
             shift
             ;;
+        --pos_augment_count)
+            POS_AUGMENT_COUNT="$2"
+            shift 2
+            ;;
+        --neg_augment_count)
+            NEG_AUGMENT_COUNT="$2"
+            shift 2
+            ;;
+        --conservative)
+            # 保守策略：正1负0
+            POS_AUGMENT_COUNT=1
+            NEG_AUGMENT_COUNT=0
+            echo "使用保守增强策略: 正1负0"
+            shift
+            ;;
+        --aggressive)
+            # 激进策略：正3负1 (不推荐，容易过拟合)
+            POS_AUGMENT_COUNT=3
+            NEG_AUGMENT_COUNT=1
+            echo "警告: 使用激进增强策略 (正3负1)，可能导致过拟合"
+            shift
+            ;;
         --help|-h)
             echo "用法: $0 [选项]"
             echo "选项:"
-            echo "  --force, -f           强制重新生成增强数据（默认行为）"
-            echo "  --reuse, -r           重用最近一次生成的增强数据，不生成新数据"
-            echo "  --help, -h            显示此帮助信息"
+            echo "  --force, -f                    强制重新生成增强数据（默认行为）"
+            echo "  --reuse, -r                    重用最近一次生成的增强数据，不生成新数据"
+            echo "  --pos_augment_count <数量>     指定正样本增强次数（支持小数，如0.5表示50%样本增强1次）"
+            echo "  --neg_augment_count <数量>     指定负样本增强次数（支持小数，如0.5表示50%样本增强1次）"
+            echo "  --conservative                 使用保守策略 (正1负0，推荐)"
+            echo "  --aggressive                   使用激进策略 (正3负1，不推荐)"
+            echo "  --help, -h                     显示此帮助信息"
+            echo ""
+            echo "默认使用精细化渐进式增强策略 (正1负0 + 渐进式)"
             exit 0
             ;;
         *)
@@ -83,10 +110,35 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "======================================================"
-echo "DrugBAN3D 优化数据增强训练脚本"
+echo "DrugBAN3D 平衡增强训练脚本"
 echo "======================================================"
-echo "正样本增强次数: $POS_AUGMENT_COUNT (优化版：高质量少量增强)"
-echo "负样本增强次数: $NEG_AUGMENT_COUNT (保持原始质量)"
+echo "正样本增强次数: $POS_AUGMENT_COUNT (轻度增强：50%样本增强1次)"
+echo "负样本增强次数: $NEG_AUGMENT_COUNT (轻度增强：50%样本增强1次)"
+echo "======================================================"
+echo "轻度增强策略特点:"
+echo "- 分布保持: 正负样本都轻度增强，保持32:68原始分布"
+echo "- 高质量增强: 使用最保守和安全的增强方法"
+echo "- 优化权重: gentle_rotate 70%, thermal_vibration 30%"
+echo "- 移除激进方法: 只保留最安全的旋转和振动方法"
+echo "- 超保守参数: 旋转±1度, 振动0.002Å"
+echo "- 预期数据集增长: 50% (原始10436 → ~15654样本)"
+echo "- 预期分布: 训练集32:68, 验证集32:68, 测试集32:68"
+echo "======================================================"
+
+# 显示当前配置文件的关键参数预览
+echo "=== 当前配置文件预览 ==="
+echo "配置文件: $CONFIG_FILE"
+if [ -f "$CONFIG_FILE" ]; then
+    echo "关键参数:"
+    echo "  训练参数:"
+    grep -E "BATCH_SIZE|G_LEARNING_RATE|D_LEARNING_RATE|WEIGHT_DECAY" "$CONFIG_FILE" | sed 's/^/    /'
+    echo "  模型参数:"
+    grep -E "HIDDEN_DIM|NUM_LAYERS|DROPOUT" "$CONFIG_FILE" | sed 's/^/    /'
+    echo "  损失函数:"
+    grep -E "USE_FOCAL_LOSS|FOCAL_LOSS_GAMMA|FOCAL_LOSS_ALPHA" "$CONFIG_FILE" | sed 's/^/    /'
+else
+    echo "  警告: 配置文件不存在!"
+fi
 echo "======================================================"
 
 # 如果需要重用最近的增强数据，查找最新目录
@@ -176,48 +228,127 @@ if [ "$TRAIN_MODEL" = true ]; then
         echo "  TEST_FILE: \"$TEST_LABEL\"" >> $TMP_CONFIG
     fi
     
-    # 优化训练策略：更激进的早停和正则化
-    sed -i "s|EARLY_STOPPING_PATIENCE:.*|EARLY_STOPPING_PATIENCE: 10|g" $TMP_CONFIG
-    sed -i "/SOLVER:/,/^[a-zA-Z]/ s|LR_SCHEDULER_TYPE:.*|LR_SCHEDULER_TYPE: \"plateau\"|g" $TMP_CONFIG
-    sed -i "/SOLVER:/,/^[a-zA-Z]/ s|BATCH_SIZE:.*|BATCH_SIZE: 64|g" $TMP_CONFIG
-
-    # 增加正则化设置
-    sed -i "/TRAIN:/,/^[a-zA-Z]/ s|WEIGHT_DECAY:.*|WEIGHT_DECAY: 0.001|g" $TMP_CONFIG
-    sed -i "/TRAIN:/,/^[a-zA-Z]/ s|DROPOUT:.*|DROPOUT: 0.6|g" $TMP_CONFIG
-    sed -i "/SOLVER:/,/^[a-zA-Z]/ s|LR_SCHEDULER_PATIENCE:.*|LR_SCHEDULER_PATIENCE: 5|g" $TMP_CONFIG
-    sed -i "/SOLVER:/,/^[a-zA-Z]/ s|LR_SCHEDULER_FACTOR:.*|LR_SCHEDULER_FACTOR: 0.5|g" $TMP_CONFIG
-    
     echo "已创建临时配置文件: $TMP_CONFIG"
     echo "已更新缓存目录为: $AUGMENT_DIR"
     echo "已更新结果目录为: $RESULT_DIR"
     echo "已更新训练/验证标签文件为增强后的标签文件"
     echo "已保持测试集使用原始标签文件: $TEST_LABEL"
-    echo "优化设置: 早停10轮, 权重衰减0.001, Dropout 0.6, 学习率调度更激进"
     
-    # 步骤3: 运行训练
+    # 步骤3: 显示详细配置信息并运行训练
     echo "======================================================"
     echo "开始使用增强数据训练模型..."
     echo "======================================================"
-    
+
+    # 显示详细的配置信息
+    echo "=== 详细配置信息 ===" | tee -a $LOG_FILE
+    echo "配置文件: $TMP_CONFIG" | tee -a $LOG_FILE
+    echo "训练数据: ${AUGMENTED_LABELS_DIR}/train_augmented.csv" | tee -a $LOG_FILE
+    echo "验证数据: ${AUGMENTED_LABELS_DIR}/valid_augmented.csv" | tee -a $LOG_FILE
+    echo "测试数据: $TEST_LABEL" | tee -a $LOG_FILE
+    echo "缓存目录: $AUGMENT_DIR" | tee -a $LOG_FILE
+    echo "结果目录: $RESULT_DIR" | tee -a $LOG_FILE
+    echo "" | tee -a $LOG_FILE
+
+    # 显示完整配置参数详览
+    echo "=== 完整配置参数详览 ===" | tee -a $LOG_FILE
+    if [ -f "$TMP_CONFIG" ]; then
+        echo "📋 训练参数 (TRAIN):" | tee -a $LOG_FILE
+        grep -A 15 "TRAIN:" "$TMP_CONFIG" | head -12 | sed 's/^/  /' | tee -a $LOG_FILE
+        echo "" | tee -a $LOG_FILE
+
+        echo "🏗️ GNN配置:" | tee -a $LOG_FILE
+        grep -A 5 "GNN:" "$TMP_CONFIG" | sed 's/^/  /' | tee -a $LOG_FILE
+        echo "" | tee -a $LOG_FILE
+
+        echo "🔧 解码器配置:" | tee -a $LOG_FILE
+        grep -A 8 "DECODER:" "$TMP_CONFIG" | sed 's/^/  /' | tee -a $LOG_FILE
+        echo "" | tee -a $LOG_FILE
+
+        echo "📊 损失函数配置:" | tee -a $LOG_FILE
+        grep -E "USE_FOCAL_LOSS|FOCAL_LOSS_GAMMA|FOCAL_LOSS_ALPHA|USE_BIAS_CORRECTION" "$TMP_CONFIG" | sed 's/^/  /' | tee -a $LOG_FILE
+        echo "" | tee -a $LOG_FILE
+
+        echo "🌐 3D空间特征配置:" | tee -a $LOG_FILE
+        grep -A 8 "SPATIAL_3D:" "$TMP_CONFIG" | sed 's/^/  /' | tee -a $LOG_FILE
+        echo "" | tee -a $LOG_FILE
+
+        echo "⚙️ 求解器配置:" | tee -a $LOG_FILE
+        grep -A 10 "SOLVER:" "$TMP_CONFIG" | sed 's/^/  /' | tee -a $LOG_FILE
+        echo "" | tee -a $LOG_FILE
+
+        echo "⏹️ 早停配置:" | tee -a $LOG_FILE
+        grep -E "USE_EARLY_STOPPING|EARLY_STOPPING_PATIENCE" "$TMP_CONFIG" | sed 's/^/  /' | tee -a $LOG_FILE
+        echo "" | tee -a $LOG_FILE
+    else
+        echo "警告: 配置文件 $TMP_CONFIG 不存在!" | tee -a $LOG_FILE
+    fi
+    echo "=========================" | tee -a $LOG_FILE
+    echo "" | tee -a $LOG_FILE
+
+    # 显示训练开始时间
+    echo "训练开始时间: $(date)" | tee -a $LOG_FILE
+    echo "======================================================"
+
     python main.py --cfg $TMP_CONFIG --data bindingdb --split stratified --use_3d --use_augmented --output-dir $RESULT_DIR | tee -a $LOG_FILE
     
     # 检查训练是否成功
-    if [ $? -ne 0 ]; then
-        echo "模型训练失败！请检查错误信息。"
+    TRAIN_EXIT_CODE=$?
+    echo "训练完成时间: $(date)" | tee -a $LOG_FILE
+
+    if [ $TRAIN_EXIT_CODE -ne 0 ]; then
+        echo "模型训练失败！请检查错误信息。" | tee -a $LOG_FILE
         exit 1
     fi
-    
+
+    # 显示训练总结
+    echo "======================================================"
+    echo "=== 训练总结 ===" | tee -a $LOG_FILE
+    echo "训练成功完成！" | tee -a $LOG_FILE
+    echo "结果保存在: $RESULT_DIR" | tee -a $LOG_FILE
+    echo "配置文件: $TMP_CONFIG" | tee -a $LOG_FILE
+    echo "日志文件: $LOG_FILE" | tee -a $LOG_FILE
+
+    # 查找并显示模型文件信息
+    if [ -d "$RESULT_DIR" ]; then
+        MODEL_FILES=$(find "$RESULT_DIR" -name "*.pth" -o -name "*.pt" | head -5)
+        if [ -n "$MODEL_FILES" ]; then
+            echo "保存的模型文件:" | tee -a $LOG_FILE
+            echo "$MODEL_FILES" | sed 's/^/  /' | tee -a $LOG_FILE
+        fi
+    fi
+    echo "======================================================"
+
     # 清理临时文件
     rm $TMP_CONFIG
-    
-    echo "训练完成！结果保存在: $RESULT_DIR"
 fi
 
 # 简洁的完成信息
 echo "完成时间: $(date)"
 
-# 如果存在结果文件，显示关键指标
+# 如果存在结果文件，显示关键指标并评估性能
 if [ -f "$RESULT_DIR/results.txt" ]; then
+    echo "======================================================"
     echo "性能指标："
-    grep -E "AUROC|F1分数|最佳轮次" "$RESULT_DIR/results.txt" | sed 's/^/  /'
+    grep -E "AUROC|AUPRC|F1分数|最佳轮次" "$RESULT_DIR/results.txt" | sed 's/^/  /'
+    echo ""
+
+    # 检查是否达到预期性能目标
+    AUROC=$(grep "AUROC:" "$RESULT_DIR/results.txt" | awk '{print $2}' 2>/dev/null)
+    AUPRC=$(grep "AUPRC:" "$RESULT_DIR/results.txt" | awk '{print $2}' 2>/dev/null)
+
+    if [ -n "$AUROC" ] && [ -n "$AUPRC" ]; then
+        echo "性能评估 (目标: AUROC > 0.89, AUPRC > 0.79):"
+        if (( $(echo "$AUROC > 0.89" | bc -l 2>/dev/null || echo 0) )); then
+            echo "  ✓ AUROC ($AUROC) 达到预期目标"
+        else
+            echo "  ✗ AUROC ($AUROC) 未达到预期目标"
+        fi
+
+        if (( $(echo "$AUPRC > 0.79" | bc -l 2>/dev/null || echo 0) )); then
+            echo "  ✓ AUPRC ($AUPRC) 达到预期目标"
+        else
+            echo "  ✗ AUPRC ($AUPRC) 未达到预期目标"
+        fi
+    fi
+    echo "======================================================"
 fi
