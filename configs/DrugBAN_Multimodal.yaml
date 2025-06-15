@@ -1,0 +1,171 @@
+MODEL_TYPE: "DrugBAN_Multimodal"
+
+PATH:
+  DATA_DIR: "datasets"
+  CACHE_DIR: "/home/work/workspace/shi_shaoqun/snap/DrugBAN-main/cached_graphs"  # 缓存目录
+
+# 3D数据配置
+DATA_3D:
+  ROOT_DIR: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_pdb"
+  LABEL_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/labels.csv"
+  DIS_THRESHOLD: 5.0
+  NUM_WORKERS: 16
+  TRAIN_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv"
+  VAL_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv"
+  TEST_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv"
+
+# 1D/2D数据配置（对应的序列数据）
+DATA_1D2D:
+  ROOT_DIR: "/home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences"
+  TRAIN_FILE: "/home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences/random/train_stratified.csv"
+  VAL_FILE: "/home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences/random/val_stratified.csv"
+  TEST_FILE: "/home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences/random/test_stratified.csv"
+  SEQID_MAPPING: "/home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences/random/seqid_mapping.csv"
+
+DATA:
+  TRAIN_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv"
+  VAL_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv"
+  TEST_FILE: "/home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv"
+
+# 多模态融合配置 - 优化版本
+MULTIMODAL:
+  ENABLE: True
+  FUSION_TYPE: "hierarchical"  # 分层融合：early + late
+  FUSION_LAYERS: [2, 3, 4]  # 增加第3层融合，更细粒度的特征融合
+  CROSS_ATTENTION_HEADS: 12  # 增加注意力头数，提升表达能力
+  FUSION_DROPOUT: 0.15  # 降低dropout，保留更多有用信息
+  # 动态权重配置 - 模型自动学习最优权重分配
+  DYNAMIC_WEIGHTS: true  # 启用动态权重
+  WEIGHT_NET_HIDDEN_DIM: 384  # 增加权重网络容量
+  # 初始权重偏向1D/2D模态（因为其性能更强）
+  MODALITY_WEIGHTS: [0.35, 0.65]  # 3D权重, 1D/2D权重
+
+TRAIN:
+  D_LEARNING_RATE: 0.0003  # 略微降低学习率，提升稳定性
+  G_LEARNING_RATE: 0.00015  # 略微降低学习率，提升稳定性
+  BATCH_SIZE: 32  # 保持batch size
+  D_STEPS_PER_G_STEP: 1
+  RESUME_CHECKPOINT: ""
+  EPOCH: 120  # 增加训练轮数，给模型更多学习时间
+  GRADIENT_ACCUMULATE_STEPS: 4  # 梯度累积
+  GRADIENT_CLIP_NORM: 0.8  # 降低梯度裁剪阈值，防止梯度爆炸
+  WEIGHT_DECAY: 0.0005  # 增加正则化强度
+  LABEL_SMOOTHING: 0.08  # 增加标签平滑，提升泛化能力
+  POS_WEIGHT: 1.0  # 平衡正负样本权重
+  # 禁用数据增强相关参数
+  USE_AUGMENTATION: False
+  AUGMENTATION_RATIO: 0.0
+
+DRUG:
+  ATOM_MAX: 50
+  NODE_IN_FEATS: 35  # 3D DrugBAN使用35维特征
+  NODE_IN_EMBEDDING: 128
+  PADDING: True
+  HIDDEN_LAYERS: [128, 256, 256]
+
+# 1D/2D DrugBAN配置（用于多模态融合）
+DRUG_1D2D:
+  NODE_IN_FEATS: 75  # 1D/2D DrugBAN使用75维特征（CanonicalAtomFeaturizer）
+  NODE_IN_EMBEDDING: 128
+  PADDING: True
+  HIDDEN_LAYERS: [128, 128, 128]  # 使用原始DrugBAN的配置
+
+PROTEIN:
+  SEQ_MAX: 1000
+  EMBEDDING_DIM: 64
+  PADDING: True
+  NUM_FILTERS: [32, 64, 96]
+  KERNEL_SIZE: [4, 8, 12]
+  NODE_IN_FEATS: 35
+
+EDGE_FEATS:
+  intra_l: 17
+  intra_p: 17
+  inter_l2p: 11
+  inter_p2l: 11
+
+GNN:
+  HIDDEN_DIM: 384
+  NUM_LAYERS: 4
+
+BCN:
+  HEADS: 10  # 增加注意力头数，提升特征融合能力
+
+DECODER:
+  IN_DIM: 384
+  HIDDEN_DIM: 768  # 增加隐藏层维度，提升模型容量
+  OUT_DIM: 192  # 增加输出维度
+  BINARY: 1
+  DROPOUT: 0.25  # 降低dropout，保留更多信息
+
+ADAPT:
+  LAMBDA: 0.1
+  USE_TARGET: False
+  METHOD: None
+  ENTROPY_LAMBDA: 1.0
+  RANDOM_DIM: 512
+
+COMET:
+  USE: False
+  PROJECT: "DrugBAN_Multimodal"
+  WORKSPACE: "xsahbhc"
+  TAG: "multimodal_fusion"
+
+SOLVER:
+  MAX_EPOCH: 120  # 与TRAIN.EPOCH保持一致
+  BATCH_SIZE: 32  # 与TRAIN.BATCH_SIZE保持一致
+  USE_MIXED_PRECISION: False
+  LR_SCHEDULER: True
+  LR_SCHEDULER_TYPE: "plateau"  # 使用plateau调度器，基于性能自适应调整
+  LR_WARMUP_EPOCHS: 6  # 适中的预热轮数
+  LR_PATIENCE: 8  # 性能停滞8轮后降低学习率
+  LR_FACTOR: 0.7  # 学习率衰减因子
+  LR_MIN: 1e-6  # 最小学习率
+  GRADIENT_CLIP_NORM: 0.8  # 与TRAIN保持一致
+  SEED: 42
+
+RESULT:
+  OUTPUT_DIR: ""
+  SAVE_MODEL: True
+  SAVE_EACH_EPOCH: False
+  SAVE_BEST_ONLY: True
+  USE_STATE_DICT: True
+  SAVE_TEST_PREDICTIONS: True
+  SAVE_TEST_DETAILS: True
+
+TEST:
+  USE_ORIGINAL_TEST_DATA: True
+  DEBUG_MODE: True
+  VERBOSE: True
+  BATCH_SIZE: 32  # 与训练batch size保持一致
+
+USE_EARLY_STOPPING: True
+EARLY_STOPPING_PATIENCE: 20  # 增加耐心值，给模型更多收敛时间
+
+USE_BIAS_CORRECTION: True
+
+# 3D空间特征融合配置 - 优化版本
+SPATIAL_3D:
+  ENABLE_SPATIAL_FUSION: true
+  ENABLE_MULTISCALE: true
+  DISTANCE_SCALES: [1.5, 3.0, 5.0, 8.0]  # 增加更细粒度的距离尺度
+  SPATIAL_DROPOUT: 0.08  # 降低dropout，保留更多空间信息
+  CROSS_ATTENTION_HEADS: 12  # 增加注意力头数，与多模态配置保持一致
+
+# 损失函数配置 - 优化版本
+USE_FOCAL_LOSS: True
+FOCAL_LOSS_GAMMA: 1.2  # 调整gamma参数，更好处理难样本
+FOCAL_LOSS_ALPHA: 0.25  # 调整alpha参数
+
+USE_CONTRASTIVE_LOSS: False
+USE_FEATURE_REGULARIZATION: True  # 启用特征正则化，提升泛化能力
+FEATURE_REGULARIZATION_WEIGHT: 0.005  # 特征正则化权重
+
+DA:
+  USE: False
+  METHOD: None
+  INIT_EPOCH: 0
+  LAMB_DA: 0.1
+  RANDOM_LAYER: False
+  ORIGINAL_RANDOM: False
+  USE_ENTROPY: False

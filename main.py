@@ -21,8 +21,10 @@ from trainer import Trainer
 from dataloader import DTIDataset, MultiDataLoader
 from dataloader_3d import get_protein_ligand_dataloader, get_precomputed_graph_dataloader, get_loader
 from dataloader_3d_augmented import get_augmented_dataloader  # 导入增强数据加载器
+from dataloader_multimodal import get_multimodal_dataloader  # 导入多模态数据加载器
 from models import DrugBAN
 from drugban_3d import DrugBAN3D
+from drugban_multimodal import DrugBANMultimodal  # 导入多模态模型
 from torch.utils.data import DataLoader
 from utils import set_seed, graph_collate_func, mkdir
 from dataloader_3d import ProteinLigandDataset, filter_none_collate_fn
@@ -200,47 +202,72 @@ def main():
         # 使用原始DrugBAN数据加载方式
         dataFolder = f'{cfg.PATH.DATA_DIR}/{args.data}'
         dataFolder = os.path.join(dataFolder, str(args.split))
-        
+
         train_path = os.path.join(dataFolder, 'train.csv')
         val_path = os.path.join(dataFolder, "val.csv")
         test_path = os.path.join(dataFolder, "test.csv")
-        
+
         df_train = pd.read_csv(train_path)
         df_val = pd.read_csv(val_path)
         df_test = pd.read_csv(test_path)
-        
-        train_samples = len(df_train)
-        val_samples = len(df_val)
-        test_samples = len(df_test)
-        
-        if args.split == 'stratified':
-            # 计算正样本比例
-            train_pos = df_train['label'].sum()
-            val_pos = df_val['label'].sum()
-            test_pos = df_test['label'].sum()
-            train_pos_ratio = train_pos / train_samples * 100
-            val_pos_ratio = val_pos / val_samples * 100
-            test_pos_ratio = test_pos / test_samples * 100
-            print(f"分层数据集: 训练集 {train_samples} 样本, 验证集 {val_samples} 样本, 测试集 {test_samples} 样本")
-            print(f"正样本比例: 训练集 {train_pos_ratio:.2f}%, 验证集 {val_pos_ratio:.2f}%, 测试集 {test_pos_ratio:.2f}%")
+    elif cfg.MODEL_TYPE == "DrugBAN_Multimodal":
+        # 使用多模态数据加载方式
+        print("初始化多模态数据加载器...")
 
-        train_dataset = DTIDataset(df_train.index.values, df_train)
-        val_dataset = DTIDataset(df_val.index.values, df_val)
-        test_dataset = DTIDataset(df_test.index.values, df_test)
-        
-        params = {
-            'batch_size': cfg.TRAIN.BATCH_SIZE, 
-            'shuffle': True, 
-            'num_workers': 4,
-            'drop_last': True, 
-            'collate_fn': graph_collate_func
-        }
-        
-        training_generator = DataLoader(train_dataset, **params)
-        params['shuffle'] = False
-        params['drop_last'] = False
-        val_generator = DataLoader(val_dataset, **params)
-        test_generator = DataLoader(test_dataset, **params)
+        # 检查必要的配置
+        if not hasattr(cfg, 'DATA_1D2D') or not hasattr(cfg.DATA_1D2D, 'SEQID_MAPPING'):
+            print("错误: 多模态配置缺少DATA_1D2D.SEQID_MAPPING")
+            return None
+
+        # 获取工作线程数
+        num_workers = cfg.DATA_3D.NUM_WORKERS if hasattr(cfg.DATA_3D, 'NUM_WORKERS') else 2
+
+        try:
+            # 创建多模态数据加载器
+            training_generator = get_multimodal_dataloader(
+                data_3d_root=cfg.DATA_3D.ROOT_DIR,
+                data_1d2d_root=cfg.DATA_1D2D.ROOT_DIR,
+                label_file=cfg.DATA.TRAIN_FILE,
+                seqid_mapping_file=cfg.DATA_1D2D.SEQID_MAPPING,
+                batch_size=cfg.TRAIN.BATCH_SIZE,
+                shuffle=True,
+                num_workers=num_workers,
+                dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                cache_dir=cfg.PATH.CACHE_DIR,
+                is_test=False
+            )
+
+            val_generator = get_multimodal_dataloader(
+                data_3d_root=cfg.DATA_3D.ROOT_DIR,
+                data_1d2d_root=cfg.DATA_1D2D.ROOT_DIR,
+                label_file=cfg.DATA.VAL_FILE,
+                seqid_mapping_file=cfg.DATA_1D2D.SEQID_MAPPING,
+                batch_size=cfg.TRAIN.BATCH_SIZE,
+                shuffle=False,
+                num_workers=num_workers,
+                dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                cache_dir=cfg.PATH.CACHE_DIR,
+                is_test=False
+            )
+
+            test_generator = get_multimodal_dataloader(
+                data_3d_root=cfg.DATA_3D.ROOT_DIR,
+                data_1d2d_root=cfg.DATA_1D2D.ROOT_DIR,
+                label_file=cfg.DATA.TEST_FILE,
+                seqid_mapping_file=cfg.DATA_1D2D.SEQID_MAPPING,
+                batch_size=cfg.TRAIN.BATCH_SIZE,
+                shuffle=False,
+                num_workers=num_workers,
+                dis_threshold=cfg.DATA_3D.DIS_THRESHOLD,
+                cache_dir=cfg.PATH.CACHE_DIR,
+                is_test=True
+            )
+
+            print("多模态数据加载器初始化成功")
+
+        except Exception as e:
+            print(f"多模态数据加载器初始化失败: {str(e)}")
+            return None
     else:  # DrugBAN3D
         # 获取工作线程数
         num_workers = cfg.DATA_3D.NUM_WORKERS if hasattr(cfg.DATA_3D, 'NUM_WORKERS') else 2
@@ -452,6 +479,9 @@ def main():
     # 创建模型
     if cfg.MODEL_TYPE == "DrugBAN":
         model = DrugBAN(**cfg).to(device)
+    elif cfg.MODEL_TYPE == "DrugBAN_Multimodal":
+        model = DrugBANMultimodal(**cfg).to(device)
+        print("创建多模态DrugBAN模型")
     else:  # DrugBAN3D
         model = DrugBAN3D(**cfg).to(device)
     

@@ -2,7 +2,7 @@ MODEL_TYPE: "DrugBAN3D"
 
 PATH:
   DATA_DIR: "datasets"
-  CACHE_DIR: "/home/work/workspace/shi_shaoqun/snap/DrugBAN-main/cached_graphs"  # 设置预处理缓存目录
+  CACHE_DIR: "/home/work/workspace/shi_shaoqun/snap/DrugBAN-main/cached_graphs"  # 设置预处理缓存目录（禁用增强）
 
 # 数据集相关配置
 DATA_3D:

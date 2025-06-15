@@ -1,0 +1,151 @@
+ADAPT:
+  ENTROPY_LAMBDA: 1.0
+  LAMBDA: 0.1
+  METHOD: None
+  RANDOM_DIM: 512
+  USE_TARGET: False
+BCN:
+  HEADS: 10
+COMET:
+  PROJECT: DrugBAN_Multimodal
+  TAG: multimodal_optimized
+  USE: False
+  WORKSPACE: xsahbhc
+CONTRASTIVE_LOSS_WEIGHT: 0.5
+DA:
+  INIT_EPOCH: 0
+  LAMB_DA: 0.1
+  METHOD: None
+  ORIGINAL_RANDOM: False
+  RANDOM_LAYER: False
+  USE: False
+  USE_ENTROPY: False
+DATA:
+  TEST_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv
+  TRAIN_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv
+  VAL_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv
+DATA_1D2D:
+  ROOT_DIR: /home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences
+  SEQID_MAPPING: /home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences/random/seqid_mapping.csv
+  TEST_FILE: /home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences/random/test_stratified.csv
+  TRAIN_FILE: /home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences/random/train_stratified.csv
+  VAL_FILE: /home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences/random/val_stratified.csv
+DATA_3D:
+  DIS_THRESHOLD: 5.0
+  LABEL_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/labels.csv
+  NUM_WORKERS: 16
+  ROOT_DIR: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_pdb
+  TEST_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/test_stratified.csv
+  TRAIN_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/train_stratified.csv
+  VAL_FILE: /home/work/workspace/shi_shaoqun/snap/3D_structure/bindingdb/train_csv/val_stratified.csv
+DEBUG_MODE: False
+DECODER:
+  BINARY: 1
+  DROPOUT: 0.2
+  HIDDEN_DIM: 1024
+  IN_DIM: 384
+  OUT_DIM: 256
+DRUG:
+  ATOM_MAX: 50
+  HIDDEN_LAYERS: [128, 256, 256]
+  NODE_IN_EMBEDDING: 128
+  NODE_IN_FEATS: 35
+  PADDING: True
+DRUG_1D2D:
+  HIDDEN_LAYERS: [128, 128, 128]
+  NODE_IN_EMBEDDING: 128
+  NODE_IN_FEATS: 75
+  PADDING: True
+EARLY_STOPPING_PATIENCE: 20
+EDGE_FEATS:
+  inter_l2p: 11
+  inter_p2l: 11
+  intra_l: 17
+  intra_p: 17
+FEATURE_REGULARIZATION_WEIGHT: 0.005
+FOCAL_LOSS_ALPHA: 0.25
+FOCAL_LOSS_GAMMA: 1.2
+GNN:
+  HIDDEN_DIM: 384
+  NUM_LAYERS: 4
+MODEL_TYPE: DrugBAN_Multimodal
+MULTIMODAL:
+  ADAPTIVE_POOLING: False
+  CROSS_ATTENTION_HEADS: 8
+  DYNAMIC_WEIGHTS: True
+  ENABLE: True
+  FUSION_DROPOUT: 0.1
+  FUSION_LAYERS: [2, 3, 4]
+  FUSION_TYPE: hierarchical
+  GATED_FUSION: False
+  LAYER_NORM: False
+  MODALITY_WEIGHTS: [0.4, 0.6]
+  RESIDUAL_CONNECTION: False
+  TEMPERATURE_SCALING: 1.0
+  WEIGHT_NET_HIDDEN_DIM: 512
+PATH:
+  CACHE_DIR: /home/work/workspace/shi_shaoqun/snap/DrugBAN-main/cached_graphs
+  DATA_DIR: datasets
+  RESULT_DIR: result
+PROTEIN:
+  EMBEDDING_DIM: 64
+  KERNEL_SIZE: [4, 8, 12]
+  NODE_IN_FEATS: 35
+  NUM_FILTERS: [32, 64, 96]
+  PADDING: True
+  SEQ_MAX: 1000
+RESULT:
+  OUTPUT_DIR: result/DrugBAN_Multimodal_Optimized_20250615_181936
+  SAVE_BEST_ONLY: True
+  SAVE_EACH_EPOCH: False
+  SAVE_MODEL: True
+  SAVE_TEST_DETAILS: True
+  SAVE_TEST_PREDICTIONS: True
+  USE_STATE_DICT: True
+SOLVER:
+  BATCH_SIZE: 32
+  GRADIENT_CLIP_NORM: 1.0
+  LR_FACTOR: 0.6
+  LR_MIN: 5e-07
+  LR_PATIENCE: 10
+  LR_SCHEDULER: True
+  LR_SCHEDULER_TYPE: plateau
+  LR_WARMUP_EPOCHS: 8
+  MAX_EPOCH: 120
+  SEED: 42
+  USE_MIXED_PRECISION: False
+SPATIAL_3D:
+  CROSS_ATTENTION_HEADS: 12
+  DISTANCE_SCALES: [1.5, 3.0, 5.0, 8.0]
+  ENABLE_MULTISCALE: True
+  ENABLE_SPATIAL_FUSION: True
+  SPATIAL_DROPOUT: 0.08
+TEST:
+  BATCH_SIZE: 32
+  DEBUG_MODE: True
+  USE_ORIGINAL_TEST_DATA: True
+  VERBOSE: True
+TRAIN:
+  AUGMENTATION_RATIO: 0.0
+  BATCH_SIZE: 32
+  COSINE_ETA_MIN: 1e-06
+  COSINE_T_MAX: 40
+  D_LEARNING_RATE: 0.0003
+  D_STEPS_PER_G_STEP: 1
+  EPOCH: 120
+  GRADIENT_ACCUMULATE_STEPS: 4
+  GRADIENT_CLIP_NORM: 1.0
+  G_LEARNING_RATE: 0.0002
+  LABEL_SMOOTHING: 0.1
+  POS_WEIGHT: 1.0
+  RESUME_CHECKPOINT: 
+  USE_AUGMENTATION: False
+  USE_COSINE_ANNEALING: True
+  WEIGHT_DECAY: 0.001
+USE_BIAS_CORRECTION: True
+USE_CONTRASTIVE_LOSS: False
+USE_EARLY_STOPPING: True
+USE_FEATURE_REGULARIZATION: True
+USE_FOCAL_LOSS: True
+USE_ORIGINAL_TEST_DATA: True
+VERBOSE: True

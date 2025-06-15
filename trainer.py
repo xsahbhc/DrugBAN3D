@@ -471,14 +471,56 @@ class Trainer(object):
                 continue
                 
             try:
-                # 解包批次数据
-                bg, labels = batch
-                
-                # 检查是否有空标签
-                if labels is None:
-                    none_labels += 1
+                # 处理不同类型的批处理数据
+                if len(batch) == 3:  # 多模态数据格式: (bg_3d, data_1d2d, labels) 或原始DrugBAN格式: (v_d, v_p, labels)
+                    if hasattr(self.model, 'drugban_3d') and hasattr(self.model, 'drugban_1d2d'):
+                        # 多模态DrugBAN数据格式
+                        bg_3d, data_1d2d, labels = batch
+
+                        # 检查是否有空数据
+                        if bg_3d is None or data_1d2d is None or labels is None:
+                            none_labels += 1
+                            continue
+
+                        # 将数据移到设备上
+                        bg_3d = bg_3d.to(self.device)
+                        labels = labels.float().to(self.device)
+
+                        # 处理1D/2D数据，将其移到设备上
+                        mol_graph = data_1d2d['mol_graph'].to(self.device)  # 确保DGL图移动到正确设备
+                        protein_seq = data_1d2d['protein_seq'].to(self.device)
+
+                        data_1d2d_device = {
+                            'mol_graph': mol_graph,
+                            'protein_seq': protein_seq
+                        }
+
+                        # 前向传播（多模态）
+                        v_d, v_p, f, score = self.model(bg_3d, data_1d2d_device)
+                    else:
+                        # 原始DrugBAN数据格式
+                        v_d, v_p, labels = batch
+                        v_d, v_p, labels = v_d.to(self.device), v_p.to(self.device), labels.float().to(self.device)
+                        v_d, v_p, f, score = self.model(v_d, v_p)
+
+                elif len(batch) == 2:  # DrugBAN3D数据格式: (bg, labels)
+                    bg, labels = batch
+
+                    # 检查是否有空标签
+                    if labels is None:
+                        none_labels += 1
+                        continue
+
+                    # 将图和标签移到设备上
+                    bg = bg.to(self.device)
+                    labels = labels.float().to(self.device)
+
+                    # 前向传播
+                    v_d, v_p, f, score = self.model(bg)
+                else:
+                    print(f"警告: 批次 {i} 的元素数量 ({len(batch)}) 不符合预期，跳过")
                     continue
-                
+
                 # 每100个批次打印一次标签统计信息
                 if i % 100 == 0:
                     batch_pos = (labels > 0).sum().item()
@@ -486,36 +528,29 @@ class Trainer(object):
                     pos_count += batch_pos
                     neg_count += batch_neg
                     print(f"批次 {i}: 正样本 {batch_pos}, 负样本 {batch_neg}")
-                    
-                # 将图和标签移到设备上
-                bg = bg.to(self.device)
-                labels = labels.float().to(self.device)
-                
+
                 # 确保标签形状正确
                 if len(labels.shape) == 0:
                     labels = labels.unsqueeze(0)
-                
+
                 # 清除梯度
                 self.optim.zero_grad()
-                
-                # 前向传播
-                v_d, v_p, f, score = self.model(bg)
-                
+
                 # 计算损失
                 # 调整预测值形状，确保与标签形状匹配
                 score = score.squeeze()  # 将形状从[batch_size, 1]变为[batch_size]
                 loss = self.loss_fn(score, labels)
-                
+
                 # 反向传播
                 loss.backward()
-                
+
                 # 梯度裁剪（如果启用）
                 if self.clip_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
-                    
+
                 # 优化器步进
                 self.optim.step()
-                
+
                 # 记录损失
                 losses.append(loss.item())
                 
@@ -716,32 +751,62 @@ class Trainer(object):
                 
                 try:
                     # 处理不同类型的批处理数据
-                    if len(batch) == 3:  # 原始DrugBAN的数据格式: (v_d, v_p, labels)
-                        v_d, v_p, labels = batch
-                        v_d, v_p, labels = v_d.to(self.device), v_p.to(self.device), labels.float().to(self.device)
-                        v_d, v_p, f, score = self.model(v_d, v_p)
-                        batch_size = labels.shape[0]
+                    if len(batch) == 3:  # 多模态数据格式: (bg_3d, data_1d2d, labels) 或原始DrugBAN格式: (v_d, v_p, labels)
+                        if hasattr(self.model, 'drugban_3d') and hasattr(self.model, 'drugban_1d2d'):
+                            # 多模态DrugBAN数据格式
+                            bg_3d, data_1d2d, labels = batch
+
+                            if bg_3d is None or data_1d2d is None or labels is None:
+                                print(f"警告: 批次 {i} 包含None值，跳过")
+                                error_batches += 1
+                                continue
+
+                            batch_size = labels.shape[0]
+
+                            # 将数据移到设备上
+                            bg_3d = bg_3d.to(self.device)
+                            labels = labels.float().to(self.device)
+
+                            # 处理1D/2D数据，将其移到设备上
+                            mol_graph = data_1d2d['mol_graph'].to(self.device)  # 确保DGL图移动到正确设备
+                            protein_seq = data_1d2d['protein_seq'].to(self.device)
+
+                            data_1d2d_device = {
+                                'mol_graph': mol_graph,
+                                'protein_seq': protein_seq
+                            }
+
+                            # 前向传播（多模态）
+                            v_d, v_p, f, score = self.model(bg_3d, data_1d2d_device)
+                        else:
+                            # 原始DrugBAN数据格式
+                            v_d, v_p, labels = batch
+                            v_d, v_p, labels = v_d.to(self.device), v_p.to(self.device), labels.float().to(self.device)
+                            v_d, v_p, f, score = self.model(v_d, v_p)
+                            batch_size = labels.shape[0]
+
                     elif len(batch) == 2:  # DrugBAN3D的数据格式: (bg, labels)
                         bg, labels = batch
                         if bg is None or labels is None:
                             print(f"警告: 批次 {i} 的图或标签为None，跳过")
                             error_batches += 1
                             continue
-                        
+
                         batch_size = labels.shape[0]
                         # 简化的批次信息输出（仅在详细模式下）
                         if self.verbose and (i < 3 or i % 50 == 0):  # 减少输出频率
                             print(f"处理批次 {i}/{len(dataloader)}, 样本数: {batch_size}")
-                        
+
                         bg, labels = bg.to(self.device), labels.float().to(self.device)
                         v_d, v_p, f, score = self.model(bg)
-                        
-                        # 调整预测值形状，确保与标签形状匹配
-                        score = score.squeeze()
+
                     else:
                         print(f"警告: 批次 {i} 的元素数量 ({len(batch)}) 不符合预期，跳过")
                         error_batches += 1
                         continue
+
+                    # 调整预测值形状，确保与标签形状匹配
+                    score = score.squeeze()
                     
                     if self.n_class == 1:
                         # 添加调试信息和形状检查

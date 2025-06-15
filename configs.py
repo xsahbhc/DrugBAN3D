@@ -23,6 +23,8 @@ _C.TRAIN.GRADIENT_CLIP_NORM = 0.0  # 添加梯度裁剪配置项
 _C.TRAIN.WEIGHT_DECAY = 0.0        # L2正则化系数
 _C.TRAIN.LABEL_SMOOTHING = 0.0     # 标签平滑系数
 _C.TRAIN.POS_WEIGHT = 2.125        # 正样本权重参数
+_C.TRAIN.USE_AUGMENTATION = False  # 是否使用数据增强
+_C.TRAIN.AUGMENTATION_RATIO = 0.0  # 数据增强比例
 
 # 数据集配置
 _C.DATA = CN()
@@ -38,6 +40,9 @@ _C.SOLVER.USE_MIXED_PRECISION = False  # 是否使用混合精度训练
 _C.SOLVER.LR_SCHEDULER = False         # 是否使用学习率调度器
 _C.SOLVER.LR_SCHEDULER_TYPE = "cosine" # 学习率调度器类型: cosine, plateau, one_cycle
 _C.SOLVER.LR_WARMUP_EPOCHS = 0         # 学习率预热轮数
+_C.SOLVER.LR_PATIENCE = 10             # Plateau调度器耐心值
+_C.SOLVER.LR_FACTOR = 0.5              # 学习率衰减因子
+_C.SOLVER.LR_MIN = 1e-7                # 最小学习率
 _C.SOLVER.GRADIENT_CLIP_NORM = 0.0     # 添加求解器梯度裁剪配置项
 _C.SOLVER.SEED = 666                   # 求解器随机种子
 
@@ -61,13 +66,20 @@ _C.DA.RANDOM_LAYER = False
 _C.DA.ORIGINAL_RANDOM = False
 _C.DA.USE_ENTROPY = False
 
-# 药物分子配置
+# 药物分子配置（3D DrugBAN）
 _C.DRUG = CN()
 _C.DRUG.ATOM_MAX = 50
 _C.DRUG.NODE_IN_FEATS = 35
 _C.DRUG.NODE_IN_EMBEDDING = 128
 _C.DRUG.PADDING = True
 _C.DRUG.HIDDEN_LAYERS = [128, 256, 256]
+
+# 1D/2D药物分子配置（多模态融合用）
+_C.DRUG_1D2D = CN()
+_C.DRUG_1D2D.NODE_IN_FEATS = 75  # CanonicalAtomFeaturizer特征维度
+_C.DRUG_1D2D.NODE_IN_EMBEDDING = 128
+_C.DRUG_1D2D.PADDING = True
+_C.DRUG_1D2D.HIDDEN_LAYERS = [128, 128, 128]  # 原始DrugBAN配置
 
 # 蛋白质配置
 _C.PROTEIN = CN()
@@ -119,6 +131,30 @@ _C.DATA_3D.VAL_FILE = ''
 _C.DATA_3D.TEST_FILE = ''
 _C.DATA_3D.DIS_THRESHOLD = 5.0
 _C.DATA_3D.NUM_WORKERS = 2  # 数据加载工作线程数
+
+# 1D/2D数据配置（多模态使用）
+_C.DATA_1D2D = CN()
+_C.DATA_1D2D.ROOT_DIR = "/home/work/workspace/shi_shaoqun/snap/drugban/datasets/bindingdb_3d_sequences"
+_C.DATA_1D2D.TRAIN_FILE = ""
+_C.DATA_1D2D.VAL_FILE = ""
+_C.DATA_1D2D.TEST_FILE = ""
+_C.DATA_1D2D.SEQID_MAPPING = ""
+
+# 多模态配置
+_C.MULTIMODAL = CN()
+_C.MULTIMODAL.ENABLE = False
+_C.MULTIMODAL.FUSION_TYPE = "hierarchical"  # 融合类型: concat, weighted, gated, hierarchical
+_C.MULTIMODAL.FUSION_LAYERS = [2, 4]  # 分层融合的层数
+_C.MULTIMODAL.CROSS_ATTENTION_HEADS = 8
+_C.MULTIMODAL.FUSION_DROPOUT = 0.2
+_C.MULTIMODAL.MODALITY_WEIGHTS = [0.6, 0.4]  # 3D权重, 1D/2D权重
+_C.MULTIMODAL.DYNAMIC_WEIGHTS = False  # 动态权重配置
+_C.MULTIMODAL.WEIGHT_NET_HIDDEN_DIM = 256  # 权重网络隐藏层维度
+_C.MULTIMODAL.TEMPERATURE_SCALING = 1.0  # 温度缩放参数
+_C.MULTIMODAL.RESIDUAL_CONNECTION = False  # 残差连接
+_C.MULTIMODAL.LAYER_NORM = False  # 层归一化
+_C.MULTIMODAL.GATED_FUSION = False  # 门控融合机制
+_C.MULTIMODAL.ADAPTIVE_POOLING = False  # 自适应池化
 
 # 设置Comet
 _C.COMET = CN()
